@@ -1,3 +1,4 @@
+# train.py
 import argparse
 import logging
 import os
@@ -132,25 +133,13 @@ class WarmupScheduler(object):
             param_group['lr'] = lr
 
 
-
-
 def train_net(net, device, training_set, validation_set, dir_checkpoint,
               epochs=150, batch_size=4, lr=0.001, save_cp=True, accumulation_steps=2,
               loss_type='combined', use_warmup=True):
 
-    # ========== OLD VERSION (without augmentation and fixed loaders) ==========
-    # train_loader = DataLoader(training_set, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    # val_loader = DataLoader(validation_set, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-    # ========== END OLD VERSION ==========
-    
-    # ========== NEW VERSION (with augmentation support for training) ==========
-    # Create new dataset instances with augmentation for training
-    train_set_augmented = PaddyBinaryDataset(training_set.images_dir, training_set.masks_dir, augment=True)
-    val_set_no_augment = PaddyBinaryDataset(validation_set.images_dir, validation_set.masks_dir, augment=False)
-    
-    train_loader = DataLoader(train_set_augmented, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
-    val_loader = DataLoader(val_set_no_augment, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True, persistent_workers=True)
-    # ========== END NEW VERSION ==========
+    # Uses the cleanly instantiated dataset from main()
+    train_loader = DataLoader(training_set, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
+    val_loader = DataLoader(validation_set, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True, persistent_workers=True)
 
     writer = SummaryWriter(comment=f'LR_{lr}_BS_{batch_size}_{loss_type}')
     global_step = 0
@@ -159,33 +148,20 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
         Epochs:          {epochs}
         Batch size:      {batch_size}
         Learning rate:   {lr}
-        Training size:   {len(train_set_augmented)}
-        Validation size: {len(val_set_no_augment)}
+        Training size:   {len(training_set)}
+        Validation size: {len(validation_set)}
         Device:          {device.type}
         Loss Type:       {loss_type}
         Warmup:          {use_warmup}
     ''')
 
-    # ========== OLD VERSION (Adam optimizer with fixed scheduler) ==========
-    # optimizer = optim.Adam(net.parameters(), lr=lr)
-    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5)
-    # ========== END OLD VERSION ==========
-    
-    # ========== NEW VERSION (AdamW optimizer with warmup + cosine annealing) ==========
     optimizer = optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
     
     if use_warmup:
         warmup_scheduler = WarmupScheduler(optimizer, warmup_epochs=5, total_epochs=epochs, base_lr=lr)
     else:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5, verbose=True)
-    # ========== END NEW VERSION ==========
 
-    # ========== OLD VERSION (simple Focal + Dice) ==========
-    # criterion_focal = smp.losses.FocalLoss(mode='binary')
-    # criterion_dice = smp.losses.DiceLoss(mode='binary')
-    # ========== END OLD VERSION ==========
-    
-    # ========== NEW VERSION (advanced loss functions) ==========
     if loss_type == 'combined':
         # Focal + Lovasz + Dice for best performance with noisy backgrounds
         criterion_focal_lovasz = FocalLovaszLoss(focal_weight=0.4, lovasz_weight=0.3)
@@ -197,7 +173,6 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
         # Default to Focal + Dice
         criterion_focal = smp.losses.FocalLoss(mode='binary')
         criterion_dice = smp.losses.DiceLoss(mode='binary')
-    # ========== END NEW VERSION ==========
 
     # Initialize history tracking
     history = {
@@ -209,36 +184,27 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
     }
 
     best_val_dice = 0.0
-    
-    # Initialize GradScaler for Mixed Precision Training
     scaler = torch.amp.GradScaler('cuda')
 
     for epoch in range(epochs):
         net.train()
         epoch_loss = 0
         
-        with tqdm(total=len(train_set_augmented), desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
+        with tqdm(total=len(training_set), desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
             optimizer.zero_grad(set_to_none=True)
             for batch_idx, batch in enumerate(train_loader):
                 imgs = batch['image'].to(device=device, dtype=torch.float32)
                 true_masks = batch['mask'].to(device=device, dtype=torch.float32)
-
                 
                 with torch.amp.autocast('cuda'):
                     masks_pred = net(imgs)
                     
-                    # ========== OLD VERSION (fixed loss calculation) ==========
-                    # loss = criterion_focal(masks_pred, true_masks) + criterion_dice(masks_pred, true_masks)
-                    # ========== END OLD VERSION ==========
-                    
-                    # ========== NEW VERSION (advanced loss selection) ==========
                     if loss_type == 'combined':
                         loss = criterion_focal_lovasz(masks_pred, true_masks) + criterion_weighted_dice(masks_pred, true_masks)
                     elif loss_type == 'boundary_aware':
                         loss = criterion_boundary(masks_pred, true_masks)
                     else:
                         loss = criterion_focal(masks_pred, true_masks) + criterion_dice(masks_pred, true_masks)
-                    # ========== END NEW VERSION ==========
                     
                     loss = loss / accumulation_steps
                     
@@ -259,17 +225,9 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
                 global_step += 1
                 
         avg_train_loss = epoch_loss / len(train_loader)
-        
-        # ========== GPU SYNCHRONIZATION FIX ==========
-        # Ensure all GPU operations complete before validation
-        if device.type == 'cuda':
-            torch.cuda.synchronize()
-        # ========== END GPU SYNCHRONIZATION FIX ==========
 
-        # ========== NEW VERSION (warmup scheduler step) ==========
         if use_warmup:
             warmup_scheduler.step(epoch)
-        # ========== END NEW VERSION ==========
 
         # --- Validation Phase ---
         net.eval()
@@ -284,14 +242,12 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
                 with torch.amp.autocast('cuda'):
                     masks_pred = net(imgs)
                     
-                    # ========== NEW VERSION (advanced loss selection for validation) ==========
                     if loss_type == 'combined':
                         loss = criterion_focal_lovasz(masks_pred, true_masks) + criterion_weighted_dice(masks_pred, true_masks)
                     elif loss_type == 'boundary_aware':
                         loss = criterion_boundary(masks_pred, true_masks)
                     else:
                         loss = criterion_focal(masks_pred, true_masks) + criterion_dice(masks_pred, true_masks)
-                    # ========== END NEW VERSION ==========
                     
                     val_loss += loss.item()
 
@@ -306,10 +262,8 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
         avg_val_loss = val_loss / len(val_loader)
         avg_val_dice = val_dice_score / len(val_loader)
 
-        # ========== NEW VERSION (warmup-aware scheduler step) ==========
         if not use_warmup:
             scheduler.step(avg_val_loss)
-        # ========== END NEW VERSION ==========
 
         # --- Logging and History ---
         current_lr = optimizer.param_groups[0]['lr']
@@ -388,11 +342,7 @@ def get_args():
     parser.add_argument('-l', '--learning-rate', type=float, default=0.001)
     parser.add_argument('-a', '--accumulation-steps', type=int, default=2)
     parser.add_argument('-c', '--dir_checkpoint', type=str, default='checkpoints/')
-    # ========== OLD VERSION (without loss type and warmup) ==========
-    # (no additional arguments)
-    # ========== END OLD VERSION ==========
     
-    # ========== NEW VERSION (with loss type and warmup control) ==========
     parser.add_argument('--loss-type', type=str, default='focal_dice', 
                         choices=['combined', 'boundary_aware', 'focal_dice'],
                         help='Loss function type: combined (Focal+Lovasz+Dice), boundary_aware (for edges), focal_dice (default)')
@@ -403,8 +353,6 @@ def get_args():
                         help='Enable ASPP (Atrous Spatial Pyramid Pooling) module at bottleneck for multi-scale context')
     parser.add_argument('--aspp-rates', type=int, nargs='+', default=[6, 12, 18],
                         help='Atrous convolution rates for ASPP (default: 6 12 18)')
-    # ========== END ASPP option ==========
-    # ========== END NEW VERSION ==========
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -414,7 +362,6 @@ if __name__ == '__main__':
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
 
-    # ========== Model selection: with or without ASPP ==========
     if args.use_aspp:
         logging.info(f"Creating EfficientUNetPlusPlus WITH ASPP (rates: {args.aspp_rates})")
         net = EfficientUNetPlusPlusWithASPP(
@@ -432,27 +379,18 @@ if __name__ == '__main__':
             in_channels=3, 
             classes=1 
         )
-    # ========== END Model selection ==========
 
     net.to(device=device)
 
-    # Dataset arguments removed; strictly calling the binary paddy dataset.
-    training_set = PaddyBinaryDataset(args.training_images_dir, args.training_masks_dir)
-    validation_set = PaddyBinaryDataset(args.validation_images_dir, args.validation_masks_dir)
+    # Instantiate datasets using the updated crop policy API
+    training_set = PaddyBinaryDataset(args.training_images_dir, args.training_masks_dir, is_train=True, patch_size=256)
+    validation_set = PaddyBinaryDataset(args.validation_images_dir, args.validation_masks_dir, is_train=False)
 
     try:
-        # ========== OLD VERSION (without loss_type and warmup) ==========
-        # train_net(net=net, device=device, training_set=training_set, validation_set=validation_set,
-        #           dir_checkpoint=args.dir_checkpoint, epochs=args.epochs, batch_size=args.batch_size,
-        #           lr=args.learning_rate, accumulation_steps=args.accumulation_steps)
-        # ========== END OLD VERSION ==========
-        
-        # ========== NEW VERSION (with loss_type and warmup) ==========
         train_net(net=net, device=device, training_set=training_set, validation_set=validation_set,
                   dir_checkpoint=args.dir_checkpoint, epochs=args.epochs, batch_size=args.batch_size,
                   lr=args.learning_rate, accumulation_steps=args.accumulation_steps,
                   loss_type=args.loss_type, use_warmup=not args.no_warmup)
-        # ========== END NEW VERSION ==========
     except KeyboardInterrupt:
         torch.save(net.state_dict(), 'INTERRUPTED.pth')
         sys.exit(0)

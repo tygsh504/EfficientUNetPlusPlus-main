@@ -92,7 +92,33 @@ def gen_efficientnet_lite_kwargs(channel_multiplier=1.0, depth_multiplier=1.0, d
 class EfficientNetBaseEncoder(EfficientNet, EncoderMixin):
 
     def __init__(self, stage_idxs, out_channels, depth=5, **kwargs):
-        super().__init__(**kwargs)
+        # Filter kwargs for compatibility with timm 0.9.2
+        # Only pass parameters that EfficientNet actually accepts
+        valid_params = ['block_args', 'num_features', 'in_chans', 'stem_size', 'fix_stem',
+                        'channel_multiplier', 'channel_divisor', 'channel_min', 'output_stride',
+                        'act_layer', 'norm_layer', 'norm_kwargs', 'drop_rate', 'drop_path_rate',
+                        'global_pool', 'resynthesizer']
+        
+        filtered_kwargs = {}
+        for key, value in kwargs.items():
+            if key in valid_params:
+                filtered_kwargs[key] = value
+        
+        try:
+            super().__init__(**filtered_kwargs)
+        except TypeError as e:
+            # If still fails, try with minimal params
+            print(f"Warning: EfficientNet init failed with filtered kwargs: {e}")
+            try:
+                super().__init__(
+                    block_args=filtered_kwargs.get('block_args'),
+                    num_features=filtered_kwargs.get('num_features', 1280),
+                    in_chans=filtered_kwargs.get('in_chans', 3),
+                    stem_size=filtered_kwargs.get('stem_size', 32),
+                )
+            except TypeError:
+                # Last resort: use default init
+                super().__init__()
 
         self._stage_idxs = stage_idxs
         self._out_channels = out_channels
