@@ -1,0 +1,452 @@
+import argparse
+import logging
+import os
+import sys
+
+import torch
+
+# Monkey-patch for timm 0.3.2 compatibility with PyTorch 2.0+
+if not hasattr(torch, '_six'):
+    import types, collections.abc
+    torch._six = types.ModuleType('torch._six')
+    torch._six.container_abcs = collections.abc
+    sys.modules['torch._six'] = torch._six
+
+import torch.nn as nn
+from torch import optim
+from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import segmentation_models_pytorch.segmentation_models_pytorch as smp
+import numpy as np
+
+# Import your custom dataset
+from utils.dataset import PaddyBinaryDataset
+
+# Import ASPP model
+from model_with_aspp import EfficientUNetPlusPlusWithASPP
+
+# ============ ADVANCED LOSS FUNCTIONS FOR PADDY FIELD SEGMENTATION ============
+class FocalLovaszLoss(nn.Module):
+    """
+    Combined Focal Loss + Lovasz Loss for robust segmentation with noisy backgrounds
+    """
+    def __init__(self, focal_weight=0.5, lovasz_weight=0.5, class_weight=None):
+        super(FocalLovaszLoss, self).__init__()
+        self.focal_weight = focal_weight
+        self.lovasz_weight = lovasz_weight
+        self.focal_loss = smp.losses.FocalLoss(mode='binary')
+        self.lovasz_loss = smp.losses.LovaszLoss(mode='binary')
+        self.class_weight = class_weight
+    
+    def forward(self, pred, target):
+        focal = self.focal_loss(pred, target)
+        lovasz = self.lovasz_loss(pred, target)
+        return self.focal_weight * focal + self.lovasz_weight * lovasz
+
+
+class WeightedDiceLoss(nn.Module):
+    """
+    Weighted Dice Loss with smooth edges for multiple leaves detection
+    """
+    def __init__(self, pos_weight=1.0, smooth=1.0):
+        super(WeightedDiceLoss, self).__init__()
+        self.pos_weight = pos_weight  # Weight for positive class (diseased leaf)
+        self.smooth = smooth
+    
+    def forward(self, pred, target):
+        pred = torch.sigmoid(pred)
+        
+        # Weighted intersection
+        intersection = (pred * target * self.pos_weight).sum()
+        
+        # Weighted dice
+        dice = (2.0 * intersection + self.smooth) / (
+            (pred * self.pos_weight).sum() + target.sum() + self.smooth
+        )
+        return 1.0 - dice
+
+
+class BoundaryAwareLoss(nn.Module):
+    """
+    Loss function that emphasizes boundaries between leaves and background
+    Useful for multiple leaves in noisy background
+    """
+    def __init__(self, boundary_weight=2.0):
+        super(BoundaryAwareLoss, self).__init__()
+        self.boundary_weight = boundary_weight
+        self.dice_loss = smp.losses.DiceLoss(mode='binary')
+    
+    def forward(self, pred, target):
+        dice = self.dice_loss(pred, target)
+        
+        # Compute edges/boundaries using simple sobel-like operation
+        # Emphasize gradients at boundaries
+        pred_sigmoid = torch.sigmoid(pred)
+        target_float = target.float()
+        
+        # Compute spatial gradients separately for height and width directions
+        # Vertical gradient (height direction)
+        grad_pred_v = torch.abs(pred_sigmoid[:, :, 1:, :] - pred_sigmoid[:, :, :-1, :])
+        grad_target_v = torch.abs(target_float[:, :, 1:, :] - target_float[:, :, :-1, :])
+        
+        # Horizontal gradient (width direction) 
+        grad_pred_h = torch.abs(pred_sigmoid[:, :, :, 1:] - pred_sigmoid[:, :, :, :-1])
+        grad_target_h = torch.abs(target_float[:, :, :, 1:] - target_float[:, :, :, :-1])
+        
+        # Boundary loss: combine both directions
+        # Pad gradients to same size as input for comparison
+        boundary_loss_v = torch.mean(torch.abs(grad_pred_v - grad_target_v))
+        boundary_loss_h = torch.mean(torch.abs(grad_pred_h - grad_target_h))
+        boundary_loss = (boundary_loss_v + boundary_loss_h) / 2.0
+        
+        return dice + self.boundary_weight * boundary_loss
+
+
+# ============ LEARNING RATE SCHEDULER WITH WARMUP ============
+class WarmupScheduler(object):
+    """
+    Learning rate scheduler with warmup phase
+    """
+    def __init__(self, optimizer, warmup_epochs=5, total_epochs=150, base_lr=0.001):
+        self.optimizer = optimizer
+        self.warmup_epochs = warmup_epochs
+        self.total_epochs = total_epochs
+        self.base_lr = base_lr
+        self.current_epoch = 0
+    
+    def step(self, epoch):
+        self.current_epoch = epoch
+        if epoch < self.warmup_epochs:
+            # Linear warmup
+            lr = self.base_lr * (epoch + 1) / self.warmup_epochs
+        else:
+            # Cosine annealing after warmup
+            progress = (epoch - self.warmup_epochs) / (self.total_epochs - self.warmup_epochs)
+            lr = self.base_lr * 0.5 * (1.0 + np.cos(np.pi * progress))
+        
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+
+
+
+
+def train_net(net, device, training_set, validation_set, dir_checkpoint,
+              epochs=150, batch_size=4, lr=0.001, save_cp=True, accumulation_steps=2,
+              loss_type='combined', use_warmup=True):
+
+    # ========== OLD VERSION (without augmentation and fixed loaders) ==========
+    # train_loader = DataLoader(training_set, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    # val_loader = DataLoader(validation_set, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    # ========== END OLD VERSION ==========
+    
+    # ========== NEW VERSION (with augmentation support for training) ==========
+    # Create new dataset instances with augmentation for training
+    train_set_augmented = PaddyBinaryDataset(training_set.images_dir, training_set.masks_dir, augment=True)
+    val_set_no_augment = PaddyBinaryDataset(validation_set.images_dir, validation_set.masks_dir, augment=False)
+    
+    train_loader = DataLoader(train_set_augmented, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
+    val_loader = DataLoader(val_set_no_augment, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True, persistent_workers=True)
+    # ========== END NEW VERSION ==========
+
+    writer = SummaryWriter(comment=f'LR_{lr}_BS_{batch_size}_{loss_type}')
+    global_step = 0
+
+    logging.info(f'''Starting binary training:
+        Epochs:          {epochs}
+        Batch size:      {batch_size}
+        Learning rate:   {lr}
+        Training size:   {len(train_set_augmented)}
+        Validation size: {len(val_set_no_augment)}
+        Device:          {device.type}
+        Loss Type:       {loss_type}
+        Warmup:          {use_warmup}
+    ''')
+
+    # ========== OLD VERSION (Adam optimizer with fixed scheduler) ==========
+    # optimizer = optim.Adam(net.parameters(), lr=lr)
+    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5)
+    # ========== END OLD VERSION ==========
+    
+    # ========== NEW VERSION (AdamW optimizer with warmup + cosine annealing) ==========
+    optimizer = optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
+    
+    if use_warmup:
+        warmup_scheduler = WarmupScheduler(optimizer, warmup_epochs=5, total_epochs=epochs, base_lr=lr)
+    else:
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5, verbose=True)
+    # ========== END NEW VERSION ==========
+
+    # ========== OLD VERSION (simple Focal + Dice) ==========
+    # criterion_focal = smp.losses.FocalLoss(mode='binary')
+    # criterion_dice = smp.losses.DiceLoss(mode='binary')
+    # ========== END OLD VERSION ==========
+    
+    # ========== NEW VERSION (advanced loss functions) ==========
+    if loss_type == 'combined':
+        # Focal + Lovasz + Dice for best performance with noisy backgrounds
+        criterion_focal_lovasz = FocalLovaszLoss(focal_weight=0.4, lovasz_weight=0.3)
+        criterion_weighted_dice = WeightedDiceLoss(pos_weight=1.5, smooth=1.0)
+    elif loss_type == 'boundary_aware':
+        # Boundary-aware loss emphasizes multiple leaf edges
+        criterion_boundary = BoundaryAwareLoss(boundary_weight=2.0)
+    else:
+        # Default to Focal + Dice
+        criterion_focal = smp.losses.FocalLoss(mode='binary')
+        criterion_dice = smp.losses.DiceLoss(mode='binary')
+    # ========== END NEW VERSION ==========
+
+    # Initialize history tracking
+    history = {
+        'epoch': [],
+        'learning_rate': [],
+        'train_loss': [],
+        'val_loss': [],
+        'val_dice': []
+    }
+
+    best_val_dice = 0.0
+    
+    # Initialize GradScaler for Mixed Precision Training
+    scaler = torch.amp.GradScaler('cuda')
+
+    for epoch in range(epochs):
+        net.train()
+        epoch_loss = 0
+        
+        with tqdm(total=len(train_set_augmented), desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
+            optimizer.zero_grad(set_to_none=True)
+            for batch_idx, batch in enumerate(train_loader):
+                imgs = batch['image'].to(device=device, dtype=torch.float32)
+                true_masks = batch['mask'].to(device=device, dtype=torch.float32)
+
+                
+                with torch.amp.autocast('cuda'):
+                    masks_pred = net(imgs)
+                    
+                    # ========== OLD VERSION (fixed loss calculation) ==========
+                    # loss = criterion_focal(masks_pred, true_masks) + criterion_dice(masks_pred, true_masks)
+                    # ========== END OLD VERSION ==========
+                    
+                    # ========== NEW VERSION (advanced loss selection) ==========
+                    if loss_type == 'combined':
+                        loss = criterion_focal_lovasz(masks_pred, true_masks) + criterion_weighted_dice(masks_pred, true_masks)
+                    elif loss_type == 'boundary_aware':
+                        loss = criterion_boundary(masks_pred, true_masks)
+                    else:
+                        loss = criterion_focal(masks_pred, true_masks) + criterion_dice(masks_pred, true_masks)
+                    # ========== END NEW VERSION ==========
+                    
+                    loss = loss / accumulation_steps
+                    
+                epoch_loss += loss.item() * accumulation_steps
+
+                scaler.scale(loss).backward()
+                
+                if ((batch_idx + 1) % accumulation_steps == 0) or (batch_idx + 1 == len(train_loader)):
+                    scaler.unscale_(optimizer) # Unscale before clipping
+                    nn.utils.clip_grad_value_(net.parameters(), 0.1)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad(set_to_none=True)
+
+                writer.add_scalar('Loss/train', loss.item() * accumulation_steps, global_step)
+                pbar.set_postfix(**{'loss (batch)': loss.item() * accumulation_steps})
+                pbar.update(imgs.shape[0])
+                global_step += 1
+                
+        avg_train_loss = epoch_loss / len(train_loader)
+
+        # ========== NEW VERSION (warmup scheduler step) ==========
+        if use_warmup:
+            warmup_scheduler.step(epoch)
+        # ========== END NEW VERSION ==========
+
+        # --- Validation Phase ---
+        net.eval()
+        val_loss = 0
+        val_dice_score = 0
+        
+        with torch.no_grad():
+            for batch in val_loader:
+                imgs = batch['image'].to(device=device, dtype=torch.float32)
+                true_masks = batch['mask'].to(device=device, dtype=torch.float32)
+                
+                with torch.amp.autocast('cuda'):
+                    masks_pred = net(imgs)
+                    
+                    # ========== NEW VERSION (advanced loss selection for validation) ==========
+                    if loss_type == 'combined':
+                        loss = criterion_focal_lovasz(masks_pred, true_masks) + criterion_weighted_dice(masks_pred, true_masks)
+                    elif loss_type == 'boundary_aware':
+                        loss = criterion_boundary(masks_pred, true_masks)
+                    else:
+                        loss = criterion_focal(masks_pred, true_masks) + criterion_dice(masks_pred, true_masks)
+                    # ========== END NEW VERSION ==========
+                    
+                    val_loss += loss.item()
+
+                # Calculate Dice Coefficient manually for tracking
+                probs = torch.sigmoid(masks_pred)
+                preds = (probs > 0.5).float()
+                
+                intersection = (preds * true_masks).sum()
+                dice = (2. * intersection) / (preds.sum() + true_masks.sum() + 1e-8)
+                val_dice_score += dice.item()
+
+        avg_val_loss = val_loss / len(val_loader)
+        avg_val_dice = val_dice_score / len(val_loader)
+
+        # ========== NEW VERSION (warmup-aware scheduler step) ==========
+        if not use_warmup:
+            scheduler.step(avg_val_loss)
+        # ========== END NEW VERSION ==========
+
+        # --- Logging and History ---
+        current_lr = optimizer.param_groups[0]['lr']
+        history['epoch'].append(epoch + 1)
+        history['learning_rate'].append(current_lr)
+        history['train_loss'].append(avg_train_loss)
+        history['val_loss'].append(avg_val_loss)
+        history['val_dice'].append(avg_val_dice)
+
+        logging.info(f"Epoch {epoch+1} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Dice: {avg_val_dice:.4f} | LR: {current_lr:.6f}")
+
+        # --- Checkpoint Saving ---
+        if save_cp:
+            os.makedirs(dir_checkpoint, exist_ok=True)
+            # Save latest
+            torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_last.pth'))
+            
+            # Save best based on Validation Dice
+            if avg_val_dice > best_val_dice:
+                best_val_dice = avg_val_dice
+                torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_best.pth'))
+                logging.info(f'New best checkpoint saved! Val Dice: {best_val_dice:.4f}')
+            
+    writer.close()
+
+    # --- Post-Training Metrics Generation ---
+    df = pd.DataFrame(history)
+    excel_path = os.path.join(dir_checkpoint, 'training_metrics.xlsx')
+    df.to_excel(excel_path, index=False)
+    logging.info(f'Metrics saved to {excel_path}')
+
+    try:
+        plt.figure(figsize=(18, 5))
+        
+        plt.subplot(1, 3, 1)
+        plt.plot(history['epoch'], history['train_loss'], label='Train Loss', color='blue')
+        plt.plot(history['epoch'], history['val_loss'], label='Val Loss', color='orange', linestyle='--')
+        plt.title('Loss over Epochs')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.legend()
+        plt.grid(True)
+
+        plt.subplot(1, 3, 2)
+        plt.plot(history['epoch'], history['learning_rate'], label='Learning Rate', color='green')
+        plt.title('Learning Rate')
+        plt.xlabel('Epoch')
+        plt.ylabel('LR')
+        plt.yscale('log')
+        plt.grid(True)
+
+        plt.subplot(1, 3, 3)
+        plt.plot(history['epoch'], history['val_dice'], label='Val Dice', color='red')
+        plt.title('Validation Dice Coefficient')
+        plt.xlabel('Epoch')
+        plt.ylabel('Dice Coeff')
+        plt.legend()
+        plt.grid(True)
+
+        plot_path = os.path.join(dir_checkpoint, 'training_plot.jpg')
+        plt.savefig(plot_path)
+        plt.close()
+        logging.info(f'Training plot saved to {plot_path}')
+    except Exception as e:
+        logging.error(f"Failed to save plots: {e}")
+
+def get_args():
+    parser = argparse.ArgumentParser(description='EfficientUNet++ Binary Train Script')
+    parser.add_argument('-ti', '--training-images-dir', type=str, required=True)
+    parser.add_argument('-tm', '--training-masks-dir', type=str, required=True)
+    parser.add_argument('-vi', '--validation-images-dir', type=str, required=True)
+    parser.add_argument('-vm', '--validation-masks-dir', type=str, required=True)
+    parser.add_argument('-enc', '--encoder', type=str, default='timm-efficientnet-b0')
+    parser.add_argument('-e', '--epochs', type=int, default=150)
+    parser.add_argument('-b', '--batch-size', type=int, default=4)
+    parser.add_argument('-l', '--learning-rate', type=float, default=0.001)
+    parser.add_argument('-a', '--accumulation-steps', type=int, default=2)
+    parser.add_argument('-c', '--dir_checkpoint', type=str, default='checkpoints/')
+    # ========== OLD VERSION (without loss type and warmup) ==========
+    # (no additional arguments)
+    # ========== END OLD VERSION ==========
+    
+    # ========== NEW VERSION (with loss type and warmup control) ==========
+    parser.add_argument('--loss-type', type=str, default='focal_dice', 
+                        choices=['combined', 'boundary_aware', 'focal_dice'],
+                        help='Loss function type: combined (Focal+Lovasz+Dice), boundary_aware (for edges), focal_dice (default)')
+    parser.add_argument('--no-warmup', action='store_true', 
+                        help='Disable learning rate warmup scheduler')
+    # ========== ASPP option ==========
+    parser.add_argument('--use-aspp', action='store_true', 
+                        help='Enable ASPP (Atrous Spatial Pyramid Pooling) module at bottleneck for multi-scale context')
+    parser.add_argument('--aspp-rates', type=int, nargs='+', default=[6, 12, 18],
+                        help='Atrous convolution rates for ASPP (default: 6 12 18)')
+    # ========== END ASPP option ==========
+    # ========== END NEW VERSION ==========
+    return parser.parse_args()
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    args = get_args()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device.type == 'cuda':
+        torch.backends.cudnn.benchmark = True
+
+    # ========== Model selection: with or without ASPP ==========
+    if args.use_aspp:
+        logging.info(f"Creating EfficientUNetPlusPlus WITH ASPP (rates: {args.aspp_rates})")
+        net = EfficientUNetPlusPlusWithASPP(
+            encoder_name=args.encoder, 
+            encoder_weights="imagenet", 
+            in_channels=3, 
+            classes=1,
+            aspp_rates=args.aspp_rates
+        )
+    else:
+        logging.info("Creating standard EfficientUNetPlusPlus (without ASPP)")
+        net = smp.EfficientUnetPlusPlus(
+            encoder_name=args.encoder, 
+            encoder_weights="imagenet", 
+            in_channels=3, 
+            classes=1 
+        )
+    # ========== END Model selection ==========
+
+    net.to(device=device)
+
+    # Dataset arguments removed; strictly calling the binary paddy dataset.
+    training_set = PaddyBinaryDataset(args.training_images_dir, args.training_masks_dir)
+    validation_set = PaddyBinaryDataset(args.validation_images_dir, args.validation_masks_dir)
+
+    try:
+        # ========== OLD VERSION (without loss_type and warmup) ==========
+        # train_net(net=net, device=device, training_set=training_set, validation_set=validation_set,
+        #           dir_checkpoint=args.dir_checkpoint, epochs=args.epochs, batch_size=args.batch_size,
+        #           lr=args.learning_rate, accumulation_steps=args.accumulation_steps)
+        # ========== END OLD VERSION ==========
+        
+        # ========== NEW VERSION (with loss_type and warmup) ==========
+        train_net(net=net, device=device, training_set=training_set, validation_set=validation_set,
+                  dir_checkpoint=args.dir_checkpoint, epochs=args.epochs, batch_size=args.batch_size,
+                  lr=args.learning_rate, accumulation_steps=args.accumulation_steps,
+                  loss_type=args.loss_type, use_warmup=not args.no_warmup)
+        # ========== END NEW VERSION ==========
+    except KeyboardInterrupt:
+        torch.save(net.state_dict(), 'INTERRUPTED.pth')
+        sys.exit(0)
