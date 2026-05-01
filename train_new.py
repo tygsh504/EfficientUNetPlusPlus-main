@@ -138,8 +138,8 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
               loss_type='combined', use_warmup=True):
 
     # Uses the cleanly instantiated dataset from main()
-    train_loader = DataLoader(training_set, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
-    val_loader = DataLoader(validation_set, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True, persistent_workers=True)
+    train_loader = DataLoader(training_set, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
+    val_loader = DataLoader(validation_set, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
     writer = SummaryWriter(comment=f'LR_{lr}_BS_{batch_size}_{loss_type}')
     global_step = 0
@@ -180,15 +180,20 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
         'learning_rate': [],
         'train_loss': [],
         'val_loss': [],
+        'train_dice': [],
         'val_dice': []
     }
 
     best_val_dice = 0.0
-    scaler = torch.amp.GradScaler('cuda')
+    use_amp = device.type == 'cuda'
+    scaler = None
+    if use_amp:
+        scaler = torch.cuda.amp.GradScaler()
 
     for epoch in range(epochs):
         net.train()
         epoch_loss = 0
+        train_dice_score = 0
         
         with tqdm(total=len(training_set), desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
             optimizer.zero_grad(set_to_none=True)
@@ -196,7 +201,7 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
                 imgs = batch['image'].to(device=device, dtype=torch.float32)
                 true_masks = batch['mask'].to(device=device, dtype=torch.float32)
                 
-                with torch.amp.autocast('cuda'):
+                with torch.amp.autocast(device.type, enabled=use_amp):
                     masks_pred = net(imgs)
                     
                     if loss_type == 'combined':
@@ -210,21 +215,37 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
                     
                 epoch_loss += loss.item() * accumulation_steps
 
-                scaler.scale(loss).backward()
+                # Calculate Train Dice
+                with torch.no_grad():
+                    probs = torch.sigmoid(masks_pred)
+                    preds = (probs > 0.5).float()
+                    intersection = (preds * true_masks).sum()
+                    dice = (2. * intersection) / (preds.sum() + true_masks.sum() + 1e-8)
+                    train_dice_score += dice.item()
+
+                if use_amp:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
                 
                 if ((batch_idx + 1) % accumulation_steps == 0) or (batch_idx + 1 == len(train_loader)):
-                    scaler.unscale_(optimizer) # Unscale before clipping
-                    nn.utils.clip_grad_value_(net.parameters(), 0.1)
-                    scaler.step(optimizer)
-                    scaler.update()
+                    if use_amp:
+                        scaler.unscale_(optimizer) # Unscale before clipping
+                        nn.utils.clip_grad_value_(net.parameters(), 0.1)
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        nn.utils.clip_grad_value_(net.parameters(), 0.1)
+                        optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
 
                 writer.add_scalar('Loss/train', loss.item() * accumulation_steps, global_step)
-                pbar.set_postfix(**{'loss (batch)': loss.item() * accumulation_steps})
+                pbar.set_postfix(**{'loss (batch)': loss.item() * accumulation_steps, 'dice': dice.item()})
                 pbar.update(imgs.shape[0])
                 global_step += 1
                 
         avg_train_loss = epoch_loss / len(train_loader)
+        avg_train_dice = train_dice_score / len(train_loader)
 
         if use_warmup:
             warmup_scheduler.step(epoch)
@@ -235,29 +256,31 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
         val_dice_score = 0
         
         with torch.no_grad():
-            for batch in val_loader:
-                imgs = batch['image'].to(device=device, dtype=torch.float32)
-                true_masks = batch['mask'].to(device=device, dtype=torch.float32)
-                
-                with torch.amp.autocast('cuda'):
-                    masks_pred = net(imgs)
+            with tqdm(total=len(validation_set), desc='Validation', unit='img', leave=False) as pbar_val:
+                for batch in val_loader:
+                    imgs = batch['image'].to(device=device, dtype=torch.float32)
+                    true_masks = batch['mask'].to(device=device, dtype=torch.float32)
                     
-                    if loss_type == 'combined':
-                        loss = criterion_focal_lovasz(masks_pred, true_masks) + criterion_weighted_dice(masks_pred, true_masks)
-                    elif loss_type == 'boundary_aware':
-                        loss = criterion_boundary(masks_pred, true_masks)
-                    else:
-                        loss = criterion_focal(masks_pred, true_masks) + criterion_dice(masks_pred, true_masks)
-                    
-                    val_loss += loss.item()
+                    with torch.amp.autocast(device.type, enabled=use_amp):
+                        masks_pred = net(imgs)
+                        
+                        if loss_type == 'combined':
+                            loss = criterion_focal_lovasz(masks_pred, true_masks) + criterion_weighted_dice(masks_pred, true_masks)
+                        elif loss_type == 'boundary_aware':
+                            loss = criterion_boundary(masks_pred, true_masks)
+                        else:
+                            loss = criterion_focal(masks_pred, true_masks) + criterion_dice(masks_pred, true_masks)
+                        
+                        val_loss += loss.item()
 
-                # Calculate Dice Coefficient manually for tracking
-                probs = torch.sigmoid(masks_pred)
-                preds = (probs > 0.5).float()
-                
-                intersection = (preds * true_masks).sum()
-                dice = (2. * intersection) / (preds.sum() + true_masks.sum() + 1e-8)
-                val_dice_score += dice.item()
+                    # Calculate Dice Coefficient manually for tracking
+                    probs = torch.sigmoid(masks_pred)
+                    preds = (probs > 0.5).float()
+                    
+                    intersection = (preds * true_masks).sum()
+                    dice = (2. * intersection) / (preds.sum() + true_masks.sum() + 1e-8)
+                    val_dice_score += dice.item()
+                    pbar_val.update(imgs.shape[0])
 
         avg_val_loss = val_loss / len(val_loader)
         avg_val_dice = val_dice_score / len(val_loader)
@@ -271,9 +294,10 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
         history['learning_rate'].append(current_lr)
         history['train_loss'].append(avg_train_loss)
         history['val_loss'].append(avg_val_loss)
+        history['train_dice'].append(avg_train_dice)
         history['val_dice'].append(avg_val_dice)
 
-        logging.info(f"Epoch {epoch+1} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Dice: {avg_val_dice:.4f} | LR: {current_lr:.6f}")
+        logging.info(f"Epoch {epoch+1} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Train Dice: {avg_train_dice:.4f} | Val Dice: {avg_val_dice:.4f} | LR: {current_lr:.6f}")
 
         # --- Checkpoint Saving ---
         if save_cp:
@@ -316,8 +340,9 @@ def train_net(net, device, training_set, validation_set, dir_checkpoint,
         plt.grid(True)
 
         plt.subplot(1, 3, 3)
-        plt.plot(history['epoch'], history['val_dice'], label='Val Dice', color='red')
-        plt.title('Validation Dice Coefficient')
+        plt.plot(history['epoch'], history['train_dice'], label='Train Dice', color='blue')
+        plt.plot(history['epoch'], history['val_dice'], label='Val Dice', color='red', linestyle='--')
+        plt.title('Dice Coefficient')
         plt.xlabel('Epoch')
         plt.ylabel('Dice Coeff')
         plt.legend()

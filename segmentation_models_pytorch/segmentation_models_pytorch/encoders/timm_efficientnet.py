@@ -3,7 +3,17 @@ import torch.nn as nn
 
 from timm.models.efficientnet import EfficientNet
 from timm.models.efficientnet import decode_arch_def, round_channels, default_cfgs
-from timm.models.layers.activations import Swish
+try:
+    # For older timm versions
+    from timm.models.layers.activations import Swish
+except ImportError:
+    try:
+        # For newer timm versions (0.9.0+)
+        from timm.layers import Swish
+    except ImportError:
+        # Fallback to PyTorch's native Swish equivalent
+        import torch.nn as nn
+        Swish = nn.SiLU
 
 from ._base import EncoderMixin
 
@@ -94,9 +104,9 @@ class EfficientNetBaseEncoder(EfficientNet, EncoderMixin):
     def __init__(self, stage_idxs, out_channels, depth=5, **kwargs):
         # Filter kwargs for compatibility with timm 0.9.2
         # Only pass parameters that EfficientNet actually accepts
-        valid_params = ['block_args', 'num_features', 'in_chans', 'stem_size', 'fix_stem',
-                        'channel_multiplier', 'channel_divisor', 'channel_min', 'output_stride',
-                        'act_layer', 'norm_layer', 'norm_kwargs', 'drop_rate', 'drop_path_rate',
+        valid_params = ['block_args', 'num_features', 'in_chans', 'stem_size', 'fix_stem', 'channel_divisor',
+                        'channel_min', 'output_stride',
+                        'act_layer', 'norm_layer', 'drop_rate', 'drop_path_rate',
                         'global_pool', 'resynthesizer']
         
         filtered_kwargs = {}
@@ -128,9 +138,17 @@ class EfficientNetBaseEncoder(EfficientNet, EncoderMixin):
         del self.classifier
 
     def get_stages(self):
+        stem_modules = []
+        if hasattr(self, 'conv_stem'):
+            stem_modules.append(self.conv_stem)
+        if hasattr(self, 'bn1'):
+            stem_modules.append(self.bn1)
+        if hasattr(self, 'act1'):
+            stem_modules.append(self.act1)
+            
         return [
             nn.Identity(),
-            nn.Sequential(self.conv_stem, self.bn1, self.act1),
+            nn.Sequential(*stem_modules),
             self.blocks[:self._stage_idxs[0]],
             self.blocks[self._stage_idxs[0]:self._stage_idxs[1]],
             self.blocks[self._stage_idxs[1]:self._stage_idxs[2]],
@@ -167,11 +185,44 @@ class EfficientNetLiteEncoder(EfficientNetBaseEncoder):
         super().__init__(stage_idxs, out_channels, depth, **kwargs)
 
 
-def prepare_settings(settings):
+def prepare_settings(settings, arch_name=None):
+    # Fallback URLs for modern timm versions that removed the 'url' field from configs
+    fallback_urls = {
+        "tf_efficientnet_b0": "https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-weights/tf_efficientnet_b0_aa-827b6e33.pth",
+        "tf_efficientnet_b1": "https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-weights/tf_efficientnet_b1_aa-ea7a6ee0.pth",
+        "tf_efficientnet_b2": "https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-weights/tf_efficientnet_b2_aa-60c94f97.pth",
+        "tf_efficientnet_b3": "https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-weights/tf_efficientnet_b3_aa-84b4657e.pth",
+        "tf_efficientnet_b4": "https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-weights/tf_efficientnet_b4_aa-818f208c.pth",
+        "tf_efficientnet_b5": "https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-weights/tf_efficientnet_b5_ra-9a3e5369.pth",
+        "tf_efficientnet_b6": "https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-weights/tf_efficientnet_b6_aa-80bd178a.pth",
+        "tf_efficientnet_b7": "https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-weights/tf_efficientnet_b7_ra-6c08e654.pth",
+    }
+
+    # Support both older timm (dict) and newer timm (DefaultCfg object)
+    mean = settings["mean"] if isinstance(settings, dict) else getattr(settings, 'mean', (0.485, 0.456, 0.406))
+    std = settings["std"] if isinstance(settings, dict) else getattr(settings, 'std', (0.229, 0.224, 0.225))
+    url = settings["url"] if isinstance(settings, dict) else getattr(settings, 'url', '')
+    
+    # If url is missing (timm 0.9.0+), find the matching architecture fallback
+    if not url:
+        if arch_name and arch_name in fallback_urls:
+            url = fallback_urls[arch_name]
+        else:
+            hf_id = settings.get('hf_hub_id', '') if isinstance(settings, dict) else getattr(settings, 'hf_hub_id', '')
+            arch = settings.get('architecture', '') if isinstance(settings, dict) else getattr(settings, 'architecture', '')
+            for key, fb_url in fallback_urls.items():
+                if key in hf_id or key == arch or key.replace('tf_', '') == arch:
+                    url = fb_url
+                    break
+        
+        # Absolute fallback if we couldn't match (prevents FileNotFoundError from empty url)
+        if not url:
+            url = fallback_urls.get(arch_name, fallback_urls["tf_efficientnet_b0"])
+
     return {
-        "mean": settings["mean"],
-        "std": settings["std"],
-        "url": settings["url"],
+        "mean": mean,
+        "std": std,
+        "url": url,
         "input_range": (0, 1),
         "input_space": "RGB",
     }
@@ -182,9 +233,9 @@ timm_efficientnet_encoders = {
     "timm-efficientnet-b0": {
         "encoder": EfficientNetEncoder,
         "pretrained_settings": {
-            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b0"]),
-            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b0_ap"]),
-            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b0_ns"]),
+            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b0"], "tf_efficientnet_b0"),
+            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b0_ap"], "tf_efficientnet_b0"),
+            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b0_ns"], "tf_efficientnet_b0"),
         },
         "params": {
             "out_channels": (3, 32, 24, 40, 112, 320),
@@ -198,9 +249,9 @@ timm_efficientnet_encoders = {
     "timm-efficientnet-b1": {
         "encoder": EfficientNetEncoder,
         "pretrained_settings": {
-            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b1"]),
-            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b1_ap"]),
-            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b1_ns"]),
+            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b1"], "tf_efficientnet_b1"),
+            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b1_ap"], "tf_efficientnet_b1"),
+            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b1_ns"], "tf_efficientnet_b1"),
         },
         "params": {
             "out_channels": (3, 32, 24, 40, 112, 320),
@@ -214,9 +265,9 @@ timm_efficientnet_encoders = {
     "timm-efficientnet-b2": {
         "encoder": EfficientNetEncoder,
         "pretrained_settings": {
-            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b2"]),
-            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b2_ap"]),
-            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b2_ns"]),
+            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b2"], "tf_efficientnet_b2"),
+            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b2_ap"], "tf_efficientnet_b2"),
+            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b2_ns"], "tf_efficientnet_b2"),
         },
         "params": {
             "out_channels": (3, 32, 24, 48, 120, 352),
@@ -230,9 +281,9 @@ timm_efficientnet_encoders = {
     "timm-efficientnet-b3": {
         "encoder": EfficientNetEncoder,
         "pretrained_settings": {
-            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b3"]),
-            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b3_ap"]),
-            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b3_ns"]),
+            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b3"], "tf_efficientnet_b3"),
+            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b3_ap"], "tf_efficientnet_b3"),
+            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b3_ns"], "tf_efficientnet_b3"),
         },
         "params": {
             "out_channels": (3, 40, 32, 48, 136, 384),
@@ -246,9 +297,9 @@ timm_efficientnet_encoders = {
     "timm-efficientnet-b4": {
         "encoder": EfficientNetEncoder,
         "pretrained_settings": {
-            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b4"]),
-            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b4_ap"]),
-            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b4_ns"]),
+            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b4"], "tf_efficientnet_b4"),
+            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b4_ap"], "tf_efficientnet_b4"),
+            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b4_ns"], "tf_efficientnet_b4"),
         },
         "params": {
             "out_channels": (3, 48, 32, 56, 160, 448),
@@ -262,9 +313,9 @@ timm_efficientnet_encoders = {
     "timm-efficientnet-b5": {
         "encoder": EfficientNetEncoder,
         "pretrained_settings": {
-            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b5"]),
-            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b5_ap"]),
-            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b5_ns"]),
+            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b5"], "tf_efficientnet_b5"),
+            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b5_ap"], "tf_efficientnet_b5"),
+            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b5_ns"], "tf_efficientnet_b5"),
         },
         "params": {
             "out_channels": (3, 48, 40, 64, 176, 512),
@@ -278,9 +329,9 @@ timm_efficientnet_encoders = {
     "timm-efficientnet-b6": {
         "encoder": EfficientNetEncoder,
         "pretrained_settings": {
-            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b6"]),
-            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b6_ap"]),
-            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b6_ns"]),
+            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b6"], "tf_efficientnet_b6"),
+            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b6_ap"], "tf_efficientnet_b6"),
+            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b6_ns"], "tf_efficientnet_b6"),
         },
         "params": {
             "out_channels": (3, 56, 40, 72, 200, 576),
@@ -294,9 +345,9 @@ timm_efficientnet_encoders = {
     "timm-efficientnet-b7": {
         "encoder": EfficientNetEncoder,
         "pretrained_settings": {
-            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b7"]),
-            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b7_ap"]),
-            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b7_ns"]),
+            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b7"], "tf_efficientnet_b7"),
+            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b7_ap"], "tf_efficientnet_b7"),
+            "noisy-student": prepare_settings(default_cfgs["tf_efficientnet_b7_ns"], "tf_efficientnet_b7"),
         },
         "params": {
             "out_channels": (3, 64, 48, 80, 224, 640),
@@ -310,8 +361,8 @@ timm_efficientnet_encoders = {
     "timm-efficientnet-b8": {
         "encoder": EfficientNetEncoder,
         "pretrained_settings": {
-            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b8"]),
-            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b8_ap"]),
+            "imagenet": prepare_settings(default_cfgs["tf_efficientnet_b8"], "tf_efficientnet_b8"),
+            "advprop": prepare_settings(default_cfgs["tf_efficientnet_b8_ap"], "tf_efficientnet_b8"),
         },
         "params": {
             "out_channels": (3, 72, 56, 88, 248, 704),

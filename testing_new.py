@@ -27,15 +27,16 @@ except ImportError:
 
 # Import your custom dataset exactly as train.py does
 from utils.dataset import PaddyBinaryDataset
+from model_with_aspp import EfficientUNetPlusPlusWithASPP
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  USER CONFIGURATION  ── edit these before running
 # ═════════════════════════════════════════════════════════════════════════════
 
-MODEL_PATH    = r'checkpoints\CP_best.pth'
-BASE_DATA_PATH = r"C:\Users\User\Desktop\testing dataset 3"
-MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b0_new_dataset_4"
+MODEL_PATH    = r'focal_best.pth'
+BASE_DATA_PATH = r"D:\Testing\Testing Dataset"
+MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b0_ASPP_focal"
 
 # The disease / category folders inside BASE_DATA_PATH.
 # Each folder must contain an "Infer_Ori" (images) and "Infer_GT" (masks) subfolder.
@@ -54,6 +55,8 @@ ENCODER_NAME = 'timm-efficientnet-b0'
 NUM_CLASSES  = 1          # binary segmentation
 INPUT_SHAPE  = [640, 480] # [Height, Width]  — resize applied inside PaddyBinaryDataset
 BATCH_SIZE   = 1
+USE_ASPP     = True       # Set to True if trained with ASPP
+ASPP_RATES   = [6, 12, 18]
 
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -167,7 +170,7 @@ def save_visual_result(image_tensor, true_mask_tensor, pred_mask_tensor,
     true_bin = (true_mask_tensor.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
     pred_bin = (pred_mask_tensor.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
 
-    fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+    fig, ax = plt.subplots(1, 3, figsize=(12, 6))
     ax[0].imshow(img_np);   ax[0].set_title(f"Original: {filename}"); ax[0].axis("off")
     ax[1].imshow(true_bin, cmap='gray'); ax[1].set_title("Ground Truth");    ax[1].axis("off")
     ax[2].imshow(pred_bin, cmap='gray'); ax[2].set_title(f"Pred (Dice: {dice_score:.2f})"); ax[2].axis("off")
@@ -188,6 +191,9 @@ def run_prediction_on_disease(disease_name, net, device, params, flops):
     img_dir  = os.path.join(BASE_DATA_PATH, disease_name, "images") 
     mask_dir = os.path.join(BASE_DATA_PATH, disease_name, "masks") 
 
+    # img_dir  = os.path.join(BASE_DATA_PATH, disease_name, "Training_Ori") 
+    # mask_dir = os.path.join(BASE_DATA_PATH, disease_name, "Training_GT") 
+
     if not os.path.exists(img_dir) or not os.path.exists(mask_dir):
         logging.warning(f"Skipping '{disease_name}': path not found.")
         return None
@@ -199,7 +205,7 @@ def run_prediction_on_disease(disease_name, net, device, params, flops):
 
     # Evaluates the full 640x480 resolution (is_train=False)
     dataset = PaddyBinaryDataset(img_dir, mask_dir, is_train=False)
-    loader  = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    loader  = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
     
     # Get the original image filenames from the dataset
     image_filenames = dataset.image_files
@@ -264,12 +270,21 @@ if __name__ == '__main__':
     logging.info(f"Using device: {device}")
 
     try:
-        net = smp.EfficientUnetPlusPlus(
-            encoder_name=ENCODER_NAME,
-            encoder_weights=None,   # weights come from checkpoint
-            in_channels=3,
-            classes=NUM_CLASSES,
-        )
+        if USE_ASPP:
+            net = EfficientUNetPlusPlusWithASPP(
+                encoder_name=ENCODER_NAME,
+                encoder_weights=None,
+                in_channels=3,
+                classes=NUM_CLASSES,
+                aspp_rates=ASPP_RATES
+            )
+        else:
+            net = smp.EfficientUnetPlusPlus(
+                encoder_name=ENCODER_NAME,
+                encoder_weights=None,   # weights come from checkpoint
+                in_channels=3,
+                classes=NUM_CLASSES,
+            )
 
         state_dict     = torch.load(MODEL_PATH, map_location=device, weights_only=True)
         new_state_dict = {k[7:] if k.startswith('module.') else k: v

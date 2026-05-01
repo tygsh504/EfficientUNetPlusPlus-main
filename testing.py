@@ -33,8 +33,8 @@ from utils.dataset import PaddyBinaryDataset
 # ═════════════════════════════════════════════════════════════════════════════
 
 MODEL_PATH    = r'checkpoints\CP_best.pth'
-BASE_DATA_PATH = r"C:\Users\User\Desktop\testing dataset 3"
-MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b0_new_dataset_4"
+BASE_DATA_PATH = r"D:\Testing\Testing Dataset"
+MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\vanilla"
 
 # The disease / category folders inside BASE_DATA_PATH.
 # Each folder must contain an "Infer_Ori" (images) and "Infer_GT" (masks) subfolder.
