@@ -30,6 +30,12 @@ from utils.dataset import PaddyBinaryDataset
 # Import ASPP model
 from model_with_aspp import EfficientUNetPlusPlusWithASPP
 
+# Import RFB model
+from model_with_rfb import EfficientUNetPlusPlusWithRFB
+
+# Import DenseASPP model
+from model_with_denseaspp import EfficientUNetPlusPlusWithDenseASPP
+
 # ============ ADVANCED LOSS FUNCTIONS FOR PADDY FIELD SEGMENTATION ============
 class FocalLovaszLoss(nn.Module):
     """
@@ -373,11 +379,13 @@ def get_args():
                         help='Loss function type: combined (Focal+Lovasz+Dice), boundary_aware (for edges), focal_dice (default)')
     parser.add_argument('--no-warmup', action='store_true', 
                         help='Disable learning rate warmup scheduler')
-    # ========== ASPP option ==========
-    parser.add_argument('--use-aspp', action='store_true', 
-                        help='Enable ASPP (Atrous Spatial Pyramid Pooling) module at bottleneck for multi-scale context')
+    # ========== Bottleneck option ==========
+    parser.add_argument('--use', type=str, choices=['rfb', 'aspp', 'denseaspp'], default=None,
+                        help='Enable RFB, ASPP, or DenseASPP module at bottleneck for multi-scale context')
     parser.add_argument('--aspp-rates', type=int, nargs='+', default=[6, 12, 18],
                         help='Atrous convolution rates for ASPP (default: 6 12 18)')
+    parser.add_argument('--denseaspp-rates', type=int, nargs='+', default=[3, 6, 12, 18],
+                        help='Atrous convolution rates for DenseASPP (default: 3 6 12 18)')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -387,7 +395,7 @@ if __name__ == '__main__':
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
 
-    if args.use_aspp:
+    if args.use == 'aspp':
         logging.info(f"Creating EfficientUNetPlusPlus WITH ASPP (rates: {args.aspp_rates})")
         net = EfficientUNetPlusPlusWithASPP(
             encoder_name=args.encoder, 
@@ -396,8 +404,25 @@ if __name__ == '__main__':
             classes=1,
             aspp_rates=args.aspp_rates
         )
+    elif args.use == 'rfb':
+        logging.info("Creating EfficientUNetPlusPlus WITH RFB")
+        net = EfficientUNetPlusPlusWithRFB(
+            encoder_name=args.encoder, 
+            encoder_weights="imagenet", 
+            in_channels=3, 
+            classes=1
+        )
+    elif args.use == 'denseaspp':
+        logging.info(f"Creating EfficientUNetPlusPlus WITH DenseASPP (rates: {args.denseaspp_rates})")
+        net = EfficientUNetPlusPlusWithDenseASPP(
+            encoder_name=args.encoder, 
+            encoder_weights="imagenet", 
+            in_channels=3, 
+            classes=1,
+            denseaspp_rates=args.denseaspp_rates
+        )
     else:
-        logging.info("Creating standard EfficientUNetPlusPlus (without ASPP)")
+        logging.info("Creating standard EfficientUNetPlusPlus (without Bottleneck)")
         net = smp.EfficientUnetPlusPlus(
             encoder_name=args.encoder, 
             encoder_weights="imagenet", 
