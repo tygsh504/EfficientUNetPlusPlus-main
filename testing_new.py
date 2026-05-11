@@ -1,4 +1,4 @@
-# testing.py
+# testing_new.py
 import os
 import sys
 import logging
@@ -27,19 +27,23 @@ except ImportError:
 
 # Import your custom dataset exactly as train.py does
 from utils.dataset import PaddyBinaryDataset
+
+# Import models
 from model_with_aspp import EfficientUNetPlusPlusWithASPP
+from model_with_rfb import EfficientUNetPlusPlusWithRFB
+from model_with_denseaspp import EfficientUNetPlusPlusWithDenseASPP
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  USER CONFIGURATION  ── edit these before running
 # ═════════════════════════════════════════════════════════════════════════════
 
-MODEL_PATH    = r'b0_aspp_combined.pth'
+MODEL_PATH    = r'checkpoints\CP_best.pth'
 BASE_DATA_PATH = r"D:\Testing\Testing Dataset"
-MAIN_OUTPUT_DIR = r"D:\Testing\result3"
+MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b0_ASPP_combined_CBAM"
 
 # The disease / category folders inside BASE_DATA_PATH.
-# Each folder must contain an "Infer_Ori" (images) and "Infer_GT" (masks) subfolder.
+# Each folder must contain an "images" and "masks" subfolder.
 DISEASES = [
     "Bacterial Leaf Blight",
     "Bacterial Leaf Streak",
@@ -50,14 +54,19 @@ DISEASES = [
     "Tungro",
 ]
 
-# Model config — must match train.py exactly
+# Model config — must match train_new.py exactly
 ENCODER_NAME = 'timm-efficientnet-b0'
 NUM_CLASSES  = 1          # binary segmentation
 INPUT_SHAPE  = [640, 480] # [Height, Width]  — resize applied inside PaddyBinaryDataset
 BATCH_SIZE   = 1
-USE_ASPP     = True       # Set to True if trained with ASPP
-ASPP_RATES   = [6, 12, 18]
-USE_CBAM     = False       # Set to True to test the newly trained models with CBAM
+
+# Bottleneck config
+BOTTLENECK   = 'aspp'     # Choose from: 'aspp', 'rfb', 'denseaspp', or None
+USE_CBAM     = True       # Set to True to test the models trained with CBAM (supported by ASPP)
+
+# Rates for ASPP / DenseASPP
+ASPP_RATES       = [6, 12, 18]
+DENSEASPP_RATES  = [3, 6, 12, 18]
 
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -183,17 +192,8 @@ def save_visual_result(image_tensor, true_mask_tensor, pred_mask_tensor,
 
 
 def run_prediction_on_disease(disease_name, net, device, params, flops):
-    """
-    Runs inference on one disease folder.
-    Folder layout expected (same as testing.py):
-        <BASE_DATA_PATH>/<disease_name>/images/   ← images
-        <BASE_DATA_PATH>/<disease_name>/masks/    ← ground-truth masks
-    """
     img_dir  = os.path.join(BASE_DATA_PATH, disease_name, "images") 
     mask_dir = os.path.join(BASE_DATA_PATH, disease_name, "masks") 
-
-    # img_dir  = os.path.join(BASE_DATA_PATH, disease_name, "Training_Ori") 
-    # mask_dir = os.path.join(BASE_DATA_PATH, disease_name, "Training_GT") 
 
     if not os.path.exists(img_dir) or not os.path.exists(mask_dir):
         logging.warning(f"Skipping '{disease_name}': path not found.")
@@ -219,7 +219,7 @@ def run_prediction_on_disease(disease_name, net, device, params, flops):
             images     = batch['image'].to(device, dtype=torch.float32)
             true_masks = batch['mask'].to(device,  dtype=torch.float32)
 
-            # Binary prediction — sigmoid + threshold, matching train.py val loop
+            # Binary prediction — sigmoid + threshold, matching train_new.py val loop
             outputs = net(images)
             probs   = torch.sigmoid(outputs)
             pred_masks = (probs > 0.5).float()
@@ -271,7 +271,8 @@ if __name__ == '__main__':
     logging.info(f"Using device: {device}")
 
     try:
-        if USE_ASPP:
+        if BOTTLENECK == 'aspp':
+            logging.info(f"Creating EfficientUNetPlusPlus WITH ASPP (CBAM: {USE_CBAM})")
             net = EfficientUNetPlusPlusWithASPP(
                 encoder_name=ENCODER_NAME,
                 encoder_weights=None,
@@ -280,7 +281,25 @@ if __name__ == '__main__':
                 aspp_rates=ASPP_RATES,
                 use_cbam=USE_CBAM
             )
+        elif BOTTLENECK == 'rfb':
+            logging.info("Creating EfficientUNetPlusPlus WITH RFB")
+            net = EfficientUNetPlusPlusWithRFB(
+                encoder_name=ENCODER_NAME,
+                encoder_weights=None,
+                in_channels=3,
+                classes=NUM_CLASSES,
+            )
+        elif BOTTLENECK == 'denseaspp':
+            logging.info(f"Creating EfficientUNetPlusPlus WITH DenseASPP (Rates: {DENSEASPP_RATES})")
+            net = EfficientUNetPlusPlusWithDenseASPP(
+                encoder_name=ENCODER_NAME,
+                encoder_weights=None,
+                in_channels=3,
+                classes=NUM_CLASSES,
+                denseaspp_rates=DENSEASPP_RATES
+            )
         else:
+            logging.info("Creating standard EfficientUNetPlusPlus (without Bottleneck)")
             net = smp.EfficientUnetPlusPlus(
                 encoder_name=ENCODER_NAME,
                 encoder_weights=None,   # weights come from checkpoint

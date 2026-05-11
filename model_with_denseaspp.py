@@ -18,6 +18,7 @@ import segmentation_models_pytorch.segmentation_models_pytorch as smp
 from segmentation_models_pytorch.segmentation_models_pytorch.encoders import get_encoder
 from segmentation_models_pytorch.segmentation_models_pytorch.efficientunetplusplus.decoder import EfficientUnetPlusPlusDecoder
 from segmentation_models_pytorch.segmentation_models_pytorch.base import SegmentationHead, SegmentationModel
+from segmentation_models_pytorch.segmentation_models_pytorch.efficientunetplusplus.model import CBAM
 
 
 class DenseASPPBlock(nn.Module):
@@ -127,6 +128,8 @@ class EfficientUNetPlusPlusWithDenseASPP(SegmentationModel):
             expansion_ratio=expansion_ratio,
         )
         
+        self.cbam = CBAM(decoder_channels[-1])
+        
         self.segmentation_head = SegmentationHead(
             in_channels=decoder_channels[-1],
             out_channels=classes,
@@ -145,5 +148,6 @@ class EfficientUNetPlusPlusWithDenseASPP(SegmentationModel):
         features_list[-1] = self.dense_aspp(features[-1])
         features = tuple(features_list)
         decoder_output = self.decoder(*features)
+        decoder_output = self.cbam(decoder_output)
         masks = self.segmentation_head(decoder_output)
         return masks

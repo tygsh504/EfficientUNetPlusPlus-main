@@ -19,6 +19,7 @@ from segmentation_models_pytorch.segmentation_models_pytorch.encoders import get
 from segmentation_models_pytorch.segmentation_models_pytorch.efficientunetplusplus.decoder import EfficientUnetPlusPlusDecoder
 from segmentation_models_pytorch.segmentation_models_pytorch.base import SegmentationHead, SegmentationModel
 from aspp import ASPP
+from segmentation_models_pytorch.segmentation_models_pytorch.efficientunetplusplus.model import CBAM
 
 
 class EfficientUNetPlusPlusWithASPP(SegmentationModel):
@@ -58,9 +59,11 @@ class EfficientUNetPlusPlusWithASPP(SegmentationModel):
         aux_params: Optional[dict] = None,
         aspp_out_channels: Optional[int] = None,
         aspp_rates: List[int] = [6, 12, 18],
+        use_cbam: bool = True,
     ):
         super().__init__()
         
+        self.use_cbam = use_cbam
         self.classes = classes
         
         # Initialize encoder
@@ -97,6 +100,10 @@ class EfficientUNetPlusPlusWithASPP(SegmentationModel):
             expansion_ratio=expansion_ratio,
         )
         
+        if self.use_cbam:
+            # CBAM module right before segmentation head
+            self.cbam = CBAM(decoder_channels[-1])
+
         # Segmentation head
         self.segmentation_head = SegmentationHead(
             in_channels=decoder_channels[-1],
@@ -148,6 +155,10 @@ class EfficientUNetPlusPlusWithASPP(SegmentationModel):
         # Pass modified features to decoder
         decoder_output = self.decoder(*features)
         
+        if self.use_cbam:
+            # Apply CBAM before the segmentation head
+            decoder_output = self.cbam(decoder_output)
+
         # Get segmentation output
         masks = self.segmentation_head(decoder_output)
         

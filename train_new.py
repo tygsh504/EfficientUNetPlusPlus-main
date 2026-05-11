@@ -386,6 +386,8 @@ def get_args():
                         help='Atrous convolution rates for ASPP (default: 6 12 18)')
     parser.add_argument('--denseaspp-rates', type=int, nargs='+', default=[3, 6, 12, 18],
                         help='Atrous convolution rates for DenseASPP (default: 3 6 12 18)')
+    parser.add_argument('--no-cbam', action='store_true',
+                        help='Disable CBAM attention module (currently supported by ASPP)')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -402,7 +404,8 @@ if __name__ == '__main__':
             encoder_weights="imagenet", 
             in_channels=3, 
             classes=1,
-            aspp_rates=args.aspp_rates
+            aspp_rates=args.aspp_rates,
+            use_cbam=not args.no_cbam
         )
     elif args.use == 'rfb':
         logging.info("Creating EfficientUNetPlusPlus WITH RFB")
