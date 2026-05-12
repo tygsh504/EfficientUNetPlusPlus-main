@@ -275,8 +275,9 @@ if __name__ == '__main__':
         )
 
         state_dict     = torch.load(MODEL_PATH, map_location=device, weights_only=True)
-        new_state_dict = {k[7:] if k.startswith('module.') else k: v
-                          for k, v in state_dict.items()}
+        new_state_dict = {.startswith('module.') else k
+            k = k.replace('cbam.', 'attention.', 1) if k.startswith('cbam.') else k
+            new_state_dict[k] = v
 
         patch_model_attention(net, new_state_dict)
         net.load_state_dict(new_state_dict)

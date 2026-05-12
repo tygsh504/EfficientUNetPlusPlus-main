@@ -36,7 +36,7 @@ from model_with_aspp import EfficientUNetPlusPlusWithASPP
 
 MODEL_PATH    = r'checkpoints\CP_best.pth'
 BASE_DATA_PATH = r"D:\Testing\Testing Dataset"
-MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b0_ASPP_combined_CBAM2"
+MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b0_ASPP_combined_ca"
 
 # The disease / category folders inside BASE_DATA_PATH.
 # Each folder must contain an "Infer_Ori" (images) and "Infer_GT" (masks) subfolder.
@@ -57,7 +57,7 @@ INPUT_SHAPE  = [640, 480] # [Height, Width]  — resize applied inside PaddyBina
 BATCH_SIZE   = 1
 USE_ASPP     = True       # Set to True if trained with ASPP
 ASPP_RATES   = [6, 12, 18]
-USE_CBAM     = True       # Set to True to test the newly trained models with CBAM
+ATTENTION_TYPE = 'ca'   # Choose from 'cbam', 'ca', or 'none'
 
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -278,7 +278,7 @@ if __name__ == '__main__':
                 in_channels=3,
                 classes=NUM_CLASSES,
                 aspp_rates=ASPP_RATES,
-                use_cbam=USE_CBAM
+                attention_type=ATTENTION_TYPE
             )
         else:
             net = smp.EfficientUnetPlusPlus(
@@ -289,8 +289,11 @@ if __name__ == '__main__':
             )
 
         state_dict     = torch.load(MODEL_PATH, map_location=device, weights_only=True)
-        new_state_dict = {k[7:] if k.startswith('module.') else k: v
-                          for k, v in state_dict.items()}
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            k = k[7:] if k.startswith('module.') else k
+            k = k.replace('cbam.', 'attention.', 1) if k.startswith('cbam.') else k
+            new_state_dict[k] = v
 
         patch_model_attention(net, new_state_dict)
         net.load_state_dict(new_state_dict)

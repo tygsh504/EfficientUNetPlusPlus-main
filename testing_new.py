@@ -62,7 +62,7 @@ BATCH_SIZE   = 1
 
 # Bottleneck config
 BOTTLENECK   = 'aspp'     # Choose from: 'aspp', 'rfb', 'denseaspp', or None
-USE_CBAM     = True       # Set to True to test the models trained with CBAM
+ATTENTION_TYPE = 'cbam'   # Choose from: 'cbam', 'ca', 'none'
 
 # Rates for ASPP / DenseASPP
 ASPP_RATES       = [6, 12, 18]
@@ -272,14 +272,14 @@ if __name__ == '__main__':
 
     try:
         if BOTTLENECK == 'aspp':
-            logging.info(f"Creating EfficientUNetPlusPlus WITH ASPP (CBAM: {USE_CBAM})")
+            logging.info(f"Creating EfficientUNetPlusPlus WITH ASPP (Attention: {ATTENTION_TYPE})")
             net = EfficientUNetPlusPlusWithASPP(
                 encoder_name=ENCODER_NAME,
                 encoder_weights=None,
                 in_channels=3,
                 classes=NUM_CLASSES,
                 aspp_rates=ASPP_RATES,
-                use_cbam=USE_CBAM
+                attention_type=ATTENTION_TYPE
             )
         elif BOTTLENECK == 'rfb':
             logging.info("Creating EfficientUNetPlusPlus WITH RFB")
@@ -288,17 +288,17 @@ if __name__ == '__main__':
                 encoder_weights=None,
                 in_channels=3,
                 classes=NUM_CLASSES,
-                use_cbam=USE_CBAM
+                attention_type=ATTENTION_TYPE
             )
         elif BOTTLENECK == 'denseaspp':
-            logging.info(f"Creating EfficientUNetPlusPlus WITH DenseASPP (Rates: {DENSEASPP_RATES}, CBAM: {USE_CBAM})")
+            logging.info(f"Creating EfficientUNetPlusPlus WITH DenseASPP (Rates: {DENSEASPP_RATES}, Attention: {ATTENTION_TYPE})")
             net = EfficientUNetPlusPlusWithDenseASPP(
                 encoder_name=ENCODER_NAME,
                 encoder_weights=None,
                 in_channels=3,
                 classes=NUM_CLASSES,
                 denseaspp_rates=DENSEASPP_RATES,
-                use_cbam=USE_CBAM
+                attention_type=ATTENTION_TYPE
             )
         else:
             logging.info("Creating standard EfficientUNetPlusPlus (without Bottleneck)")
@@ -310,8 +310,11 @@ if __name__ == '__main__':
             )
 
         state_dict     = torch.load(MODEL_PATH, map_location=device, weights_only=True)
-        new_state_dict = {k[7:] if k.startswith('module.') else k: v
-                          for k, v in state_dict.items()}
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            k = k[7:] if k.startswith('module.') else k
+            k = k.replace('cbam.', 'attention.', 1) if k.startswith('cbam.') else k
+            new_state_dict[k] = v
 
         patch_model_attention(net, new_state_dict)
         net.load_state_dict(new_state_dict)

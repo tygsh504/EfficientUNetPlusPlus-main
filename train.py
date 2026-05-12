@@ -403,6 +403,8 @@ def get_args():
                         help='Enable ASPP (Atrous Spatial Pyramid Pooling) module at bottleneck for multi-scale context')
     parser.add_argument('--aspp-rates', type=int, nargs='+', default=[6, 12, 18],
                         help='Atrous convolution rates for ASPP (default: 6 12 18)')
+    parser.add_argument('--attention', type=str, choices=['cbam', 'ca', 'none'], default='cbam',
+                        help='Attention module to use at the bottleneck (default: cbam)')
     # ========== END ASPP option ==========
     # ========== END NEW VERSION ==========
     return parser.parse_args()
@@ -422,7 +424,8 @@ if __name__ == '__main__':
             encoder_weights="imagenet", 
             in_channels=3, 
             classes=1,
-            aspp_rates=args.aspp_rates
+            aspp_rates=args.aspp_rates,
+            attention_type=args.attention
         )
     else:
         logging.info("Creating standard EfficientUNetPlusPlus (without ASPP)")

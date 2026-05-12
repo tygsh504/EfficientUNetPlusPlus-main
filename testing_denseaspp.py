@@ -55,6 +55,7 @@ INPUT_SHAPE     = [640, 480]
 BATCH_SIZE      = 1
 USE_DENSEASPP   = True       
 DENSEASPP_RATES = [3, 6, 12, 18]
+ATTENTION_TYPE  = 'cbam'  # Choose from 'cbam', 'ca', or 'none'
 
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -164,7 +165,8 @@ def save_visual_result(image_tensor, true_mask_tensor, pred_mask_tensor,
     true_bin = (true_mask_tensor.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
     pred_bin = (pred_mask_tensor.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
 
-    fig, ax = plt.subplots( ax[0].set_title(f"Original: {filename}"); ax[0].axis("off")
+    fig, ax = plt.subplots(3, 1, figsize=(6, 18))
+    ax[0].imshow(img_np);   ax[0].set_title(f"Original: {filename}"); ax[0].axis("off")
     ax[1].imshow(true_bin, cmap='gray'); ax[1].set_title("Ground Truth");    ax[1].axis("off")
     ax[2].imshow(pred_bin, cmap='gray'); ax[2].set_title(f"Pred (Dice: {dice_score:.2f})"); ax[2].axis("off")
 
@@ -251,7 +253,8 @@ if __name__ == '__main__':
                 encoder_weights=None,
                 in_channels=3,
                 classes=NUM_CLASSES,
-                denseaspp_rates=DENSEASPP_RATES
+                denseaspp_rates=DENSEASPP_RATES,
+                attention_type=ATTENTION_TYPE
             )
         else:
             net = smp.EfficientUnetPlusPlus(
@@ -262,8 +265,11 @@ if __name__ == '__main__':
             )
 
         state_dict     = torch.load(MODEL_PATH, map_location=device, weights_only=True)
-        new_state_dict = {k[7:] if k.startswith('module.') else k: v
-                          for k, v in state_dict.items()}
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            k = k[7:] if k.startswith('module.') else k
+            k = k.replace('cbam.', 'attention.', 1) if k.startswith('cbam.') else k
+            new_state_dict[k] = v
 
         patch_model_attention(net, new_state_dict)
         net.load_state_dict(new_state_dict)

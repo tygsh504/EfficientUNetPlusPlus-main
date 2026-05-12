@@ -20,6 +20,49 @@ from segmentation_models_pytorch.segmentation_models_pytorch.efficientunetpluspl
 from segmentation_models_pytorch.segmentation_models_pytorch.base import SegmentationHead, SegmentationModel
 from segmentation_models_pytorch.segmentation_models_pytorch.efficientunetplusplus.model import CBAM
 
+class h_sigmoid(nn.Module):
+    def __init__(self, inplace=True):
+        super(h_sigmoid, self).__init__()
+        self.relu = nn.ReLU6(inplace=inplace)
+
+    def forward(self, x):
+        return self.relu(x + 3) / 6
+
+class h_swish(nn.Module):
+    def __init__(self, inplace=True):
+        super(h_swish, self).__init__()
+        self.sigmoid = h_sigmoid(inplace=inplace)
+
+    def forward(self, x):
+        return x * self.sigmoid(x)
+
+class CoordAtt(nn.Module):
+    def __init__(self, inp, oup, reduction=32):
+        super(CoordAtt, self).__init__()
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+        mip = max(8, inp // reduction)
+        self.conv1 = nn.Conv2d(inp, mip, kernel_size=1, stride=1, padding=0)
+        self.bn1 = nn.BatchNorm2d(mip)
+        self.act = h_swish()
+        self.conv_h = nn.Conv2d(mip, oup, kernel_size=1, stride=1, padding=0)
+        self.conv_w = nn.Conv2d(mip, oup, kernel_size=1, stride=1, padding=0)
+
+    def forward(self, x):
+        identity = x
+        n, c, h, w = x.size()
+        x_h = self.pool_h(x)
+        x_w = self.pool_w(x).permute(0, 1, 3, 2)
+        y = torch.cat([x_h, x_w], dim=2)
+        y = self.conv1(y)
+        y = self.bn1(y)
+        y = self.act(y) 
+        x_h, x_w = torch.split(y, [h, w], dim=2)
+        x_w = x_w.permute(0, 1, 3, 2)
+        a_h = self.conv_h(x_h).sigmoid()
+        a_w = self.conv_w(x_w).sigmoid()
+        out = identity * a_w * a_h
+        return out
 
 class DenseASPPBlock(nn.Module):
     """Atrous convolution block that concatenates input with its output."""
@@ -93,11 +136,11 @@ class EfficientUNetPlusPlusWithDenseASPP(SegmentationModel):
         aux_params: Optional[dict] = None,
         denseaspp_out_channels: Optional[int] = None,
         denseaspp_rates: List[int] = [3, 6, 12, 18],
-        use_cbam: bool = True,
+        attention_type: str = 'cbam',
     ):
         super().__init__()
         
-        self.use_cbam = use_cbam
+        self.attention_type = attention_type.lower() if attention_type else 'none'
         self.classes = classes
         
         # Initialize encoder
@@ -130,9 +173,12 @@ class EfficientUNetPlusPlusWithDenseASPP(SegmentationModel):
             expansion_ratio=expansion_ratio,
         )
         
-        if self.use_cbam:
-            # CBAM module immediately after DenseASPP
-            self.cbam = CBAM(denseaspp_out_channels)
+        if self.attention_type == 'cbam':
+            self.attention = CBAM(denseaspp_out_channels)
+        elif self.attention_type == 'ca':
+            self.attention = CoordAtt(denseaspp_out_channels, denseaspp_out_channels)
+        else:
+            self.attention = None
         
         self.segmentation_head = SegmentationHead(
             in_channels=decoder_channels[-1],
@@ -151,8 +197,8 @@ class EfficientUNetPlusPlusWithDenseASPP(SegmentationModel):
         features_list = list(features)
         dense_out = self.dense_aspp(features[-1])
         
-        if self.use_cbam:
-            dense_out = self.cbam(dense_out)
+        if self.attention is not None:
+            dense_out = self.attention(dense_out)
             
         features_list[-1] = dense_out
         features = tuple(features_list)
