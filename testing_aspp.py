@@ -34,9 +34,9 @@ from model_with_aspp import EfficientUNetPlusPlusWithASPP
 #  USER CONFIGURATION  ── edit these before running
 # ═════════════════════════════════════════════════════════════════════════════
 
-MODEL_PATH    = r'b0_aspp_combined.pth'
+MODEL_PATH    = r'checkpoints\CP_best.pth'
 BASE_DATA_PATH = r"D:\Testing\Testing Dataset"
-MAIN_OUTPUT_DIR = r"D:\Testing\result3"
+MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b0_ASPP_combined_CBAM2"
 
 # The disease / category folders inside BASE_DATA_PATH.
 # Each folder must contain an "Infer_Ori" (images) and "Infer_GT" (masks) subfolder.
@@ -57,7 +57,7 @@ INPUT_SHAPE  = [640, 480] # [Height, Width]  — resize applied inside PaddyBina
 BATCH_SIZE   = 1
 USE_ASPP     = True       # Set to True if trained with ASPP
 ASPP_RATES   = [6, 12, 18]
-USE_CBAM     = False       # Set to True to test the newly trained models with CBAM
+USE_CBAM     = True       # Set to True to test the newly trained models with CBAM
 
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -171,7 +171,7 @@ def save_visual_result(image_tensor, true_mask_tensor, pred_mask_tensor,
     true_bin = (true_mask_tensor.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
     pred_bin = (pred_mask_tensor.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
 
-    fig, ax = plt.subplots(1, 3, figsize=(12, 6))
+    fig, ax = plt.subplots(3, 1, figsize=(6, 18))
     ax[0].imshow(img_np);   ax[0].set_title(f"Original: {filename}"); ax[0].axis("off")
     ax[1].imshow(true_bin, cmap='gray'); ax[1].set_title("Ground Truth");    ax[1].axis("off")
     ax[2].imshow(pred_bin, cmap='gray'); ax[2].set_title(f"Pred (Dice: {dice_score:.2f})"); ax[2].axis("off")

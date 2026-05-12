@@ -387,7 +387,7 @@ def get_args():
     parser.add_argument('--denseaspp-rates', type=int, nargs='+', default=[3, 6, 12, 18],
                         help='Atrous convolution rates for DenseASPP (default: 3 6 12 18)')
     parser.add_argument('--no-cbam', action='store_true',
-                        help='Disable CBAM attention module (currently supported by ASPP)')
+                        help='Disable CBAM attention module at the bottleneck')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -413,7 +413,8 @@ if __name__ == '__main__':
             encoder_name=args.encoder, 
             encoder_weights="imagenet", 
             in_channels=3, 
-            classes=1
+            classes=1,
+            use_cbam=not args.no_cbam
         )
     elif args.use == 'denseaspp':
         logging.info(f"Creating EfficientUNetPlusPlus WITH DenseASPP (rates: {args.denseaspp_rates})")
@@ -422,7 +423,8 @@ if __name__ == '__main__':
             encoder_weights="imagenet", 
             in_channels=3, 
             classes=1,
-            denseaspp_rates=args.denseaspp_rates
+            denseaspp_rates=args.denseaspp_rates,
+            use_cbam=not args.no_cbam
         )
     else:
         logging.info("Creating standard EfficientUNetPlusPlus (without Bottleneck)")

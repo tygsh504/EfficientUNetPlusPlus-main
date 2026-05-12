@@ -98,9 +98,11 @@ class EfficientUNetPlusPlusWithRFB(SegmentationModel):
         activation: Optional[Union[str, callable]] = None,
         aux_params: Optional[dict] = None,
         rfb_out_channels: Optional[int] = None,
+        use_cbam: bool = True,
     ):
         super().__init__()
         
+        self.use_cbam = use_cbam
         self.classes = classes
         
         # Initialize encoder
@@ -134,8 +136,9 @@ class EfficientUNetPlusPlusWithRFB(SegmentationModel):
             expansion_ratio=expansion_ratio,
         )
         
-        # CBAM module right before segmentation head
-        self.cbam = CBAM(decoder_channels[-1])
+        if self.use_cbam:
+            # CBAM module immediately after RFB
+            self.cbam = CBAM(rfb_out_channels)
 
         # Segmentation head
         self.segmentation_head = SegmentationHead(
@@ -163,15 +166,17 @@ class EfficientUNetPlusPlusWithRFB(SegmentationModel):
         
         # Apply RFB to the deepest (bottleneck) feature
         features_list = list(features)
-        features_list[-1] = self.rfb(features[-1])
+        rfb_out = self.rfb(features[-1])
+        
+        if self.use_cbam:
+            rfb_out = self.cbam(rfb_out)
+            
+        features_list[-1] = rfb_out
         features = tuple(features_list)
         
         # Pass modified features to decoder
         decoder_output = self.decoder(*features)
         
-        # Apply CBAM before the segmentation head
-        decoder_output = self.cbam(decoder_output)
-
         # Get segmentation output
         masks = self.segmentation_head(decoder_output)
         

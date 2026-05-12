@@ -101,8 +101,8 @@ class EfficientUNetPlusPlusWithASPP(SegmentationModel):
         )
         
         if self.use_cbam:
-            # CBAM module right before segmentation head
-            self.cbam = CBAM(decoder_channels[-1])
+            # CBAM module immediately after ASPP
+            self.cbam = CBAM(aspp_out_channels)
 
         # Segmentation head
         self.segmentation_head = SegmentationHead(
@@ -149,16 +149,17 @@ class EfficientUNetPlusPlusWithASPP(SegmentationModel):
         # features is a tuple of feature maps from different scales
         # We modify the deepest one (features[-1]) through ASPP
         features_list = list(features)
-        features_list[-1] = self.aspp(features[-1])
+        aspp_out = self.aspp(features[-1])
+        
+        if self.use_cbam:
+            aspp_out = self.cbam(aspp_out)
+            
+        features_list[-1] = aspp_out
         features = tuple(features_list)
         
         # Pass modified features to decoder
         decoder_output = self.decoder(*features)
         
-        if self.use_cbam:
-            # Apply CBAM before the segmentation head
-            decoder_output = self.cbam(decoder_output)
-
         # Get segmentation output
         masks = self.segmentation_head(decoder_output)
         

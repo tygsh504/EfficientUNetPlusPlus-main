@@ -93,9 +93,11 @@ class EfficientUNetPlusPlusWithDenseASPP(SegmentationModel):
         aux_params: Optional[dict] = None,
         denseaspp_out_channels: Optional[int] = None,
         denseaspp_rates: List[int] = [3, 6, 12, 18],
+        use_cbam: bool = True,
     ):
         super().__init__()
         
+        self.use_cbam = use_cbam
         self.classes = classes
         
         # Initialize encoder
@@ -128,7 +130,9 @@ class EfficientUNetPlusPlusWithDenseASPP(SegmentationModel):
             expansion_ratio=expansion_ratio,
         )
         
-        self.cbam = CBAM(decoder_channels[-1])
+        if self.use_cbam:
+            # CBAM module immediately after DenseASPP
+            self.cbam = CBAM(denseaspp_out_channels)
         
         self.segmentation_head = SegmentationHead(
             in_channels=decoder_channels[-1],
@@ -145,9 +149,13 @@ class EfficientUNetPlusPlusWithDenseASPP(SegmentationModel):
     def forward(self, x):
         features = self.encoder(x)
         features_list = list(features)
-        features_list[-1] = self.dense_aspp(features[-1])
+        dense_out = self.dense_aspp(features[-1])
+        
+        if self.use_cbam:
+            dense_out = self.cbam(dense_out)
+            
+        features_list[-1] = dense_out
         features = tuple(features_list)
         decoder_output = self.decoder(*features)
-        decoder_output = self.cbam(decoder_output)
         masks = self.segmentation_head(decoder_output)
         return masks

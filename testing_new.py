@@ -62,7 +62,7 @@ BATCH_SIZE   = 1
 
 # Bottleneck config
 BOTTLENECK   = 'aspp'     # Choose from: 'aspp', 'rfb', 'denseaspp', or None
-USE_CBAM     = True       # Set to True to test the models trained with CBAM (supported by ASPP)
+USE_CBAM     = True       # Set to True to test the models trained with CBAM
 
 # Rates for ASPP / DenseASPP
 ASPP_RATES       = [6, 12, 18]
@@ -180,7 +180,7 @@ def save_visual_result(image_tensor, true_mask_tensor, pred_mask_tensor,
     true_bin = (true_mask_tensor.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
     pred_bin = (pred_mask_tensor.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
 
-    fig, ax = plt.subplots(1, 3, figsize=(12, 6))
+    fig, ax = plt.subplots(3, 1, figsize=(6, 18))
     ax[0].imshow(img_np);   ax[0].set_title(f"Original: {filename}"); ax[0].axis("off")
     ax[1].imshow(true_bin, cmap='gray'); ax[1].set_title("Ground Truth");    ax[1].axis("off")
     ax[2].imshow(pred_bin, cmap='gray'); ax[2].set_title(f"Pred (Dice: {dice_score:.2f})"); ax[2].axis("off")
@@ -288,15 +288,17 @@ if __name__ == '__main__':
                 encoder_weights=None,
                 in_channels=3,
                 classes=NUM_CLASSES,
+                use_cbam=USE_CBAM
             )
         elif BOTTLENECK == 'denseaspp':
-            logging.info(f"Creating EfficientUNetPlusPlus WITH DenseASPP (Rates: {DENSEASPP_RATES})")
+            logging.info(f"Creating EfficientUNetPlusPlus WITH DenseASPP (Rates: {DENSEASPP_RATES}, CBAM: {USE_CBAM})")
             net = EfficientUNetPlusPlusWithDenseASPP(
                 encoder_name=ENCODER_NAME,
                 encoder_weights=None,
                 in_channels=3,
                 classes=NUM_CLASSES,
-                denseaspp_rates=DENSEASPP_RATES
+                denseaspp_rates=DENSEASPP_RATES,
+                use_cbam=USE_CBAM
             )
         else:
             logging.info("Creating standard EfficientUNetPlusPlus (without Bottleneck)")
