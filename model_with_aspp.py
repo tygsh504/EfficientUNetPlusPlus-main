@@ -103,6 +103,7 @@ class EfficientUNetPlusPlusWithASPP(SegmentationModel):
         aspp_out_channels: Optional[int] = None,
         aspp_rates: List[int] = [6, 12, 18],
         attention_type: str = 'cbam',
+        spatial_dropout: float = 0.0,
     ):
         super().__init__()
         
@@ -149,6 +150,8 @@ class EfficientUNetPlusPlusWithASPP(SegmentationModel):
             self.attention = CoordAtt(aspp_out_channels, aspp_out_channels)
         else:
             self.attention = None
+            
+        self.spatial_dropout = nn.Dropout2d(spatial_dropout) if spatial_dropout > 0.0 else nn.Identity()
 
         # Segmentation head
         self.segmentation_head = SegmentationHead(
@@ -199,6 +202,8 @@ class EfficientUNetPlusPlusWithASPP(SegmentationModel):
         
         if self.attention is not None:
             aspp_out = self.attention(aspp_out)
+            
+        aspp_out = self.spatial_dropout(aspp_out)
             
         features_list[-1] = aspp_out
         features = tuple(features_list)

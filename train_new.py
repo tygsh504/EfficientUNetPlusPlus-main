@@ -382,12 +382,14 @@ def get_args():
     # ========== Bottleneck option ==========
     parser.add_argument('--use', type=str, choices=['rfb', 'aspp', 'denseaspp'], default=None,
                         help='Enable RFB, ASPP, or DenseASPP module at bottleneck for multi-scale context')
-    parser.add_argument('--aspp-rates', type=int, nargs='+', default=[6, 12, 18],
+    parser.add_argument('--aspp-rates', type=int, nargs='+', default=[3, 5, 7],
                         help='Atrous convolution rates for ASPP (default: 6 12 18)')
     parser.add_argument('--denseaspp-rates', type=int, nargs='+', default=[3, 6, 12, 18],
                         help='Atrous convolution rates for DenseASPP (default: 3 6 12 18)')
     parser.add_argument('--attention', type=str, choices=['cbam', 'ca', 'none'], default='cbam',
                         help='Attention module to use at the bottleneck (default: cbam)')
+    parser.add_argument('--spatial-dropout', type=float, default=0.0,
+                        help='Spatial dropout rate at the bottleneck (default: 0.0)')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -405,7 +407,8 @@ if __name__ == '__main__':
             in_channels=3, 
             classes=1,
             aspp_rates=args.aspp_rates,
-            attention_type=args.attention
+            attention_type=args.attention,
+            spatial_dropout=args.spatial_dropout
         )
     elif args.use == 'rfb':
         logging.info("Creating EfficientUNetPlusPlus WITH RFB")
@@ -414,7 +417,8 @@ if __name__ == '__main__':
             encoder_weights="imagenet", 
             in_channels=3, 
             classes=1,
-            attention_type=args.attention
+            attention_type=args.attention,
+            spatial_dropout=args.spatial_dropout
         )
     elif args.use == 'denseaspp':
         logging.info(f"Creating EfficientUNetPlusPlus WITH DenseASPP (rates: {args.denseaspp_rates})")
@@ -424,7 +428,8 @@ if __name__ == '__main__':
             in_channels=3, 
             classes=1,
             denseaspp_rates=args.denseaspp_rates,
-            attention_type=args.attention
+            attention_type=args.attention,
+            spatial_dropout=args.spatial_dropout
         )
     else:
         logging.info("Creating standard EfficientUNetPlusPlus (without Bottleneck)")

@@ -405,6 +405,8 @@ def get_args():
                         help='Atrous convolution rates for ASPP (default: 6 12 18)')
     parser.add_argument('--attention', type=str, choices=['cbam', 'ca', 'none'], default='cbam',
                         help='Attention module to use at the bottleneck (default: cbam)')
+    parser.add_argument('--spatial-dropout', type=float, default=0.0,
+                        help='Spatial dropout rate at the bottleneck (default: 0.0)')
     # ========== END ASPP option ==========
     # ========== END NEW VERSION ==========
     return parser.parse_args()
@@ -425,7 +427,8 @@ if __name__ == '__main__':
             in_channels=3, 
             classes=1,
             aspp_rates=args.aspp_rates,
-            attention_type=args.attention
+            attention_type=args.attention,
+            spatial_dropout=args.spatial_dropout
         )
     else:
         logging.info("Creating standard EfficientUNetPlusPlus (without ASPP)")

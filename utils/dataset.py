@@ -272,8 +272,8 @@ class PaddyBinaryDataset(Dataset):
                 
         else:
             # Standardize resolution for efficient batching during validation
-            img = img.resize((640, 480), Image.BILINEAR)
-            mask = mask.resize((640, 480), Image.NEAREST)
+            img = img.resize((480, 640), Image.BILINEAR)
+            mask = mask.resize((480, 640), Image.NEAREST)
         # =================================================================
 
         img_tensor = TF.to_tensor(img)

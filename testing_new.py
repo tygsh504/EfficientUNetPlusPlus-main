@@ -67,6 +67,7 @@ ATTENTION_TYPE = 'cbam'   # Choose from: 'cbam', 'ca', 'none'
 # Rates for ASPP / DenseASPP
 ASPP_RATES       = [6, 12, 18]
 DENSEASPP_RATES  = [3, 6, 12, 18]
+SPATIAL_DROPOUT  = 0.0    # Set > 0.0 if trained with spatial dropout
 
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -180,7 +181,7 @@ def save_visual_result(image_tensor, true_mask_tensor, pred_mask_tensor,
     true_bin = (true_mask_tensor.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
     pred_bin = (pred_mask_tensor.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
 
-    fig, ax = plt.subplots(3, 1, figsize=(6, 18))
+    fig, ax = plt.subplots(1, 3, figsize=(18, 6))
     ax[0].imshow(img_np);   ax[0].set_title(f"Original: {filename}"); ax[0].axis("off")
     ax[1].imshow(true_bin, cmap='gray'); ax[1].set_title("Ground Truth");    ax[1].axis("off")
     ax[2].imshow(pred_bin, cmap='gray'); ax[2].set_title(f"Pred (Dice: {dice_score:.2f})"); ax[2].axis("off")
@@ -279,7 +280,8 @@ if __name__ == '__main__':
                 in_channels=3,
                 classes=NUM_CLASSES,
                 aspp_rates=ASPP_RATES,
-                attention_type=ATTENTION_TYPE
+                attention_type=ATTENTION_TYPE,
+                spatial_dropout=SPATIAL_DROPOUT
             )
         elif BOTTLENECK == 'rfb':
             logging.info("Creating EfficientUNetPlusPlus WITH RFB")
@@ -288,7 +290,8 @@ if __name__ == '__main__':
                 encoder_weights=None,
                 in_channels=3,
                 classes=NUM_CLASSES,
-                attention_type=ATTENTION_TYPE
+                attention_type=ATTENTION_TYPE,
+                spatial_dropout=SPATIAL_DROPOUT
             )
         elif BOTTLENECK == 'denseaspp':
             logging.info(f"Creating EfficientUNetPlusPlus WITH DenseASPP (Rates: {DENSEASPP_RATES}, Attention: {ATTENTION_TYPE})")
@@ -298,7 +301,8 @@ if __name__ == '__main__':
                 in_channels=3,
                 classes=NUM_CLASSES,
                 denseaspp_rates=DENSEASPP_RATES,
-                attention_type=ATTENTION_TYPE
+                attention_type=ATTENTION_TYPE,
+                spatial_dropout=SPATIAL_DROPOUT
             )
         else:
             logging.info("Creating standard EfficientUNetPlusPlus (without Bottleneck)")

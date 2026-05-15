@@ -36,7 +36,7 @@ from model_with_aspp import EfficientUNetPlusPlusWithASPP
 
 MODEL_PATH    = r'checkpoints\CP_best.pth'
 BASE_DATA_PATH = r"D:\Testing\Testing Dataset"
-MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b0_ASPP_combined_ca"
+MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b0_ASPP_combined_Rate3"
 
 # The disease / category folders inside BASE_DATA_PATH.
 # Each folder must contain an "Infer_Ori" (images) and "Infer_GT" (masks) subfolder.
@@ -56,8 +56,9 @@ NUM_CLASSES  = 1          # binary segmentation
 INPUT_SHAPE  = [640, 480] # [Height, Width]  — resize applied inside PaddyBinaryDataset
 BATCH_SIZE   = 1
 USE_ASPP     = True       # Set to True if trained with ASPP
-ASPP_RATES   = [6, 12, 18]
-ATTENTION_TYPE = 'ca'   # Choose from 'cbam', 'ca', or 'none'
+ASPP_RATES   = [3, 5, 7] # [6, 12, 18] 
+ATTENTION_TYPE = 'none'   # Choose from 'cbam', 'ca', or 'none'
+SPATIAL_DROPOUT = 0.0    # Set > 0.0 if trained with spatial dropout
 
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -171,7 +172,7 @@ def save_visual_result(image_tensor, true_mask_tensor, pred_mask_tensor,
     true_bin = (true_mask_tensor.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
     pred_bin = (pred_mask_tensor.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
 
-    fig, ax = plt.subplots(3, 1, figsize=(6, 18))
+    fig, ax = plt.subplots(1, 3, figsize=(18, 6))
     ax[0].imshow(img_np);   ax[0].set_title(f"Original: {filename}"); ax[0].axis("off")
     ax[1].imshow(true_bin, cmap='gray'); ax[1].set_title("Ground Truth");    ax[1].axis("off")
     ax[2].imshow(pred_bin, cmap='gray'); ax[2].set_title(f"Pred (Dice: {dice_score:.2f})"); ax[2].axis("off")
@@ -278,7 +279,8 @@ if __name__ == '__main__':
                 in_channels=3,
                 classes=NUM_CLASSES,
                 aspp_rates=ASPP_RATES,
-                attention_type=ATTENTION_TYPE
+                attention_type=ATTENTION_TYPE,
+                spatial_dropout=SPATIAL_DROPOUT
             )
         else:
             net = smp.EfficientUnetPlusPlus(

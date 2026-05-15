@@ -137,6 +137,7 @@ class EfficientUNetPlusPlusWithDenseASPP(SegmentationModel):
         denseaspp_out_channels: Optional[int] = None,
         denseaspp_rates: List[int] = [3, 6, 12, 18],
         attention_type: str = 'cbam',
+        spatial_dropout: float = 0.0,
     ):
         super().__init__()
         
@@ -179,6 +180,8 @@ class EfficientUNetPlusPlusWithDenseASPP(SegmentationModel):
             self.attention = CoordAtt(denseaspp_out_channels, denseaspp_out_channels)
         else:
             self.attention = None
+            
+        self.spatial_dropout = nn.Dropout2d(spatial_dropout) if spatial_dropout > 0.0 else nn.Identity()
         
         self.segmentation_head = SegmentationHead(
             in_channels=decoder_channels[-1],
@@ -199,6 +202,8 @@ class EfficientUNetPlusPlusWithDenseASPP(SegmentationModel):
         
         if self.attention is not None:
             dense_out = self.attention(dense_out)
+            
+        dense_out = self.spatial_dropout(dense_out)
             
         features_list[-1] = dense_out
         features = tuple(features_list)

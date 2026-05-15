@@ -142,6 +142,7 @@ class EfficientUNetPlusPlusWithRFB(SegmentationModel):
         aux_params: Optional[dict] = None,
         rfb_out_channels: Optional[int] = None,
         attention_type: str = 'cbam',
+        spatial_dropout: float = 0.0,
     ):
         super().__init__()
         
@@ -185,6 +186,8 @@ class EfficientUNetPlusPlusWithRFB(SegmentationModel):
             self.attention = CoordAtt(rfb_out_channels, rfb_out_channels)
         else:
             self.attention = None
+            
+        self.spatial_dropout = nn.Dropout2d(spatial_dropout) if spatial_dropout > 0.0 else nn.Identity()
 
         # Segmentation head
         self.segmentation_head = SegmentationHead(
@@ -216,6 +219,8 @@ class EfficientUNetPlusPlusWithRFB(SegmentationModel):
         
         if self.attention is not None:
             rfb_out = self.attention(rfb_out)
+            
+        rfb_out = self.spatial_dropout(rfb_out)
             
         features_list[-1] = rfb_out
         features = tuple(features_list)
