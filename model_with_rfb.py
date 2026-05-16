@@ -65,6 +65,22 @@ class CoordAtt(nn.Module):
         out = identity * a_w * a_h
         return out
 
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super(SEBlock, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Conv2d(channels, max(1, channels // reduction), kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(max(1, channels // reduction), channels, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        y = self.avg_pool(x)
+        y = self.fc(y)
+        return x * y
+
 class BasicConv(nn.Module):
     def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False):
         super(BasicConv, self).__init__()
@@ -184,6 +200,8 @@ class EfficientUNetPlusPlusWithRFB(SegmentationModel):
             self.attention = CBAM(rfb_out_channels)
         elif self.attention_type == 'ca':
             self.attention = CoordAtt(rfb_out_channels, rfb_out_channels)
+        elif self.attention_type == 'se':
+            self.attention = SEBlock(rfb_out_channels)
         else:
             self.attention = None
             

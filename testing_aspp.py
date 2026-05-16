@@ -36,7 +36,7 @@ from model_with_aspp import EfficientUNetPlusPlusWithASPP
 
 MODEL_PATH    = r'checkpoints\CP_best.pth'
 BASE_DATA_PATH = r"D:\Testing\Testing Dataset"
-MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b0_ASPP_combined_Rate3"
+MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b1_ASPP_combined"
 
 # The disease / category folders inside BASE_DATA_PATH.
 # Each folder must contain an "Infer_Ori" (images) and "Infer_GT" (masks) subfolder.
@@ -51,13 +51,13 @@ DISEASES = [
 ]
 
 # Model config — must match train.py exactly
-ENCODER_NAME = 'timm-efficientnet-b0'
+ENCODER_NAME = 'timm-efficientnet-b1'
 NUM_CLASSES  = 1          # binary segmentation
 INPUT_SHAPE  = [640, 480] # [Height, Width]  — resize applied inside PaddyBinaryDataset
 BATCH_SIZE   = 1
 USE_ASPP     = True       # Set to True if trained with ASPP
-ASPP_RATES   = [3, 5, 7] # [6, 12, 18] 
-ATTENTION_TYPE = 'none'   # Choose from 'cbam', 'ca', or 'none'
+ASPP_RATES   = [6, 12, 18] # [6, 12, 18] 
+ATTENTION_TYPE = 'none'   # Choose from 'cbam', 'ca', 'se', or 'none'
 SPATIAL_DROPOUT = 0.0    # Set > 0.0 if trained with spatial dropout
 
 # ═════════════════════════════════════════════════════════════════════════════

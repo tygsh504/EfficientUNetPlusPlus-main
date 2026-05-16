@@ -403,7 +403,7 @@ def get_args():
                         help='Enable ASPP (Atrous Spatial Pyramid Pooling) module at bottleneck for multi-scale context')
     parser.add_argument('--aspp-rates', type=int, nargs='+', default=[6, 12, 18],
                         help='Atrous convolution rates for ASPP (default: 6 12 18)')
-    parser.add_argument('--attention', type=str, choices=['cbam', 'ca', 'none'], default='cbam',
+    parser.add_argument('--attention', type=str, choices=['cbam', 'ca', 'se', 'none'], default='cbam',
                         help='Attention module to use at the bottleneck (default: cbam)')
     parser.add_argument('--spatial-dropout', type=float, default=0.0,
                         help='Spatial dropout rate at the bottleneck (default: 0.0)')

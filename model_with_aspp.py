@@ -65,6 +65,22 @@ class CoordAtt(nn.Module):
         out = identity * a_w * a_h
         return out
 
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super(SEBlock, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Conv2d(channels, max(1, channels // reduction), kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(max(1, channels // reduction), channels, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        y = self.avg_pool(x)
+        y = self.fc(y)
+        return x * y
+
 class EfficientUNetPlusPlusWithASPP(SegmentationModel):
     """
     EfficientUNetPlusPlus model with ASPP (Atrous Spatial Pyramid Pooling) module
@@ -148,6 +164,8 @@ class EfficientUNetPlusPlusWithASPP(SegmentationModel):
             self.attention = CBAM(aspp_out_channels)
         elif self.attention_type == 'ca':
             self.attention = CoordAtt(aspp_out_channels, aspp_out_channels)
+        elif self.attention_type == 'se':
+            self.attention = SEBlock(aspp_out_channels)
         else:
             self.attention = None
             

@@ -62,7 +62,7 @@ BATCH_SIZE   = 1
 
 # Bottleneck config
 BOTTLENECK   = 'aspp'     # Choose from: 'aspp', 'rfb', 'denseaspp', or None
-ATTENTION_TYPE = 'cbam'   # Choose from: 'cbam', 'ca', 'none'
+ATTENTION_TYPE = 'cbam'   # Choose from: 'cbam', 'ca', 'se', 'none'
 
 # Rates for ASPP / DenseASPP
 ASPP_RATES       = [6, 12, 18]

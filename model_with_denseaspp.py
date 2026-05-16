@@ -64,6 +64,22 @@ class CoordAtt(nn.Module):
         out = identity * a_w * a_h
         return out
 
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super(SEBlock, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Conv2d(channels, max(1, channels // reduction), kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(max(1, channels // reduction), channels, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        y = self.avg_pool(x)
+        y = self.fc(y)
+        return x * y
+
 class DenseASPPBlock(nn.Module):
     """Atrous convolution block that concatenates input with its output."""
     def __init__(self, in_channels, inter_channels, dilation):
@@ -178,6 +194,8 @@ class EfficientUNetPlusPlusWithDenseASPP(SegmentationModel):
             self.attention = CBAM(denseaspp_out_channels)
         elif self.attention_type == 'ca':
             self.attention = CoordAtt(denseaspp_out_channels, denseaspp_out_channels)
+        elif self.attention_type == 'se':
+            self.attention = SEBlock(denseaspp_out_channels)
         else:
             self.attention = None
             
