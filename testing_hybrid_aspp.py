@@ -1,4 +1,4 @@
-# testing.py
+# testing_hybrid_aspp.py
 import os
 import sys
 import logging
@@ -25,10 +25,8 @@ try:
 except ImportError:
     import segmentation_models_pytorch as smp
 
-# Import your custom dataset exactly as train.py does
 from utils.dataset import PaddyBinaryDataset
-from model_with_aspp import EfficientUNetPlusPlusWithASPP
-
+from model_with_hybrid_ASPP_CBAM import EfficientUNetPlusPlusWithHybridASPPCBAM
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  USER CONFIGURATION  ── edit these before running
@@ -36,10 +34,9 @@ from model_with_aspp import EfficientUNetPlusPlusWithASPP
 
 MODEL_PATH    = r'checkpoints\CP_best.pth'
 BASE_DATA_PATH = r"D:\Testing\Testing Dataset"
-MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b1_ASPP_combined_se"
+MAIN_OUTPUT_DIR = r"C:\Users\User\Desktop\b0_Hybrid_ASPP_CBAM"
 
 # The disease / category folders inside BASE_DATA_PATH.
-# Each folder must contain an "Infer_Ori" (images) and "Infer_GT" (masks) subfolder.
 DISEASES = [
     "Bacterial Leaf Blight",
     "Bacterial Leaf Streak",
@@ -50,77 +47,16 @@ DISEASES = [
     "Tungro",
 ]
 
-# Model config — must match train.py exactly
+# Model config
 ENCODER_NAME = 'timm-efficientnet-b0'
-NUM_CLASSES  = 1          # binary segmentation
-INPUT_SHAPE  = [640, 480] # [Height, Width]  — resize applied inside PaddyBinaryDataset
+NUM_CLASSES  = 1          
+INPUT_SHAPE  = [640, 480] # [Height, Width] 
 BATCH_SIZE   = 1
-USE_ASPP     = True       # Set to True if trained with ASPP
-ASPP_RATES   = [6, 12, 18] # [6, 12, 18] 
-ATTENTION_TYPE = 'se'   # Choose from 'cbam', 'ca', 'se', or 'none'
-SPATIAL_DROPOUT = 0.0    # Set > 0.0 if trained with spatial dropout
+
+ASPP_RATES   = [6, 12, 18]
+SPATIAL_DROPOUT = 0.0
 
 # ═════════════════════════════════════════════════════════════════════════════
-
-
-# ── SCSE attention patcher (carried over from testing.py) ────────────────────
-class SCSEModule(nn.Module):
-    def __init__(self, in_channels, mip):
-        super().__init__()
-        self.cSE = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(in_channels, mip, 1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(mip, in_channels, 1),
-            nn.Sigmoid(),
-        )
-        self.sSE = nn.Sequential(nn.Conv2d(in_channels, 1, 1), nn.Sigmoid())
-
-    def forward(self, x):
-        return x * self.cSE(x) + x * self.sSE(x)
-
-
-def patch_model_attention(model, state_dict):
-    scse_prefixes = set()
-    for k in state_dict.keys():
-        if '.cSE.' in k or '.sSE.' in k:
-            prefix = k.split('.cSE.')[0].split('.sSE.')[0]
-            scse_prefixes.add(prefix)
-
-    if not scse_prefixes:
-        return
-
-    logging.info(f"Detected SCSE attention in state_dict. Patching {len(scse_prefixes)} modules...")
-
-    for prefix in scse_prefixes:
-        parts = prefix.split('.')
-        parent = model
-        try:
-            for part in parts[:-1]:
-                if part.isdigit():
-                    parent = parent[int(part)]
-                elif isinstance(parent, nn.ModuleDict):
-                    parent = parent[part]
-                else:
-                    parent = getattr(parent, part)
-            attr_name = parts[-1]
-
-            sse_weight_key = f"{prefix}.sSE.0.weight"
-            cse_weight_key = f"{prefix}.cSE.1.weight"
-
-            if sse_weight_key in state_dict and cse_weight_key in state_dict:
-                in_channels = state_dict[sse_weight_key].shape[1]
-                mip         = state_dict[cse_weight_key].shape[0]
-                scse        = SCSEModule(in_channels, mip)
-
-                if attr_name.isdigit():
-                    parent[int(attr_name)] = scse
-                else:
-                    setattr(parent, attr_name, scse)
-        except Exception as e:
-            logging.warning(f"Could not patch {prefix}: {e}")
-# ─────────────────────────────────────────────────────────────────────────────
-
 
 def calculate_complexity(model, input_shape, device):
     try:
@@ -136,9 +72,7 @@ def calculate_complexity(model, input_shape, device):
         logging.error(f"Complexity calculation failed: {e}")
         return 0, 0
 
-
 def calculate_metrics(pred_mask, true_mask):
-    """Identical metric set to testing.py."""
     pred = pred_mask.detach().cpu().numpy().flatten()
     true = true_mask.detach().cpu().numpy().flatten()
     pred_bin = (pred > 0.5).astype(np.uint8)
@@ -162,7 +96,6 @@ def calculate_metrics(pred_mask, true_mask):
         "Recall": recall, "Accuracy": accuracy, "F1_Score": f1,
     }
 
-
 def save_visual_result(image_tensor, true_mask_tensor, pred_mask_tensor,
                        filename, dice_score, output_dir):
     img_np = image_tensor.permute(1, 2, 0).cpu().numpy()
@@ -182,19 +115,9 @@ def save_visual_result(image_tensor, true_mask_tensor, pred_mask_tensor,
     plt.savefig(save_path, dpi=150)
     plt.close(fig)
 
-
 def run_prediction_on_disease(disease_name, net, device, params, flops):
-    """
-    Runs inference on one disease folder.
-    Folder layout expected (same as testing.py):
-        <BASE_DATA_PATH>/<disease_name>/images/   ← images
-        <BASE_DATA_PATH>/<disease_name>/masks/    ← ground-truth masks
-    """
     img_dir  = os.path.join(BASE_DATA_PATH, disease_name, "images") 
     mask_dir = os.path.join(BASE_DATA_PATH, disease_name, "masks") 
-
-    # img_dir  = os.path.join(BASE_DATA_PATH, disease_name, "Training_Ori") 
-    # mask_dir = os.path.join(BASE_DATA_PATH, disease_name, "Training_GT") 
 
     if not os.path.exists(img_dir) or not os.path.exists(mask_dir):
         logging.warning(f"Skipping '{disease_name}': path not found.")
@@ -205,29 +128,24 @@ def run_prediction_on_disease(disease_name, net, device, params, flops):
     disease_output_dir.mkdir(parents=True, exist_ok=True)
     img_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Evaluates the full 640x480 resolution (is_train=False)
     dataset = PaddyBinaryDataset(img_dir, mask_dir, is_train=False)
     loader  = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
     
-    # Get the original image filenames from the dataset
     image_filenames = dataset.image_files
 
     results = []
-    image_idx = 0  # Track which image we're processing
+    image_idx = 0
 
     with torch.no_grad():
         for batch in tqdm(loader, desc=f"Predicting {disease_name}"):
             images     = batch['image'].to(device, dtype=torch.float32)
             true_masks = batch['mask'].to(device,  dtype=torch.float32)
 
-            # Binary prediction — sigmoid + threshold, matching train.py val loop
             outputs = net(images)
             probs   = torch.sigmoid(outputs)
             pred_masks = (probs > 0.5).float()
 
-            # Collect per-image metrics
             for i in range(images.shape[0]):
-                # Retrieve filename from the dataset's image list (preserves original name)
                 img_name = image_filenames[image_idx]
                 image_idx += 1
 
@@ -263,41 +181,28 @@ def run_prediction_on_disease(disease_name, net, device, params, flops):
     )
     return means
 
-
-# ── Entry point ───────────────────────────────────────────────────────────────
-
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f"Using device: {device}")
 
     try:
-        if USE_ASPP:
-            net = EfficientUNetPlusPlusWithASPP(
-                encoder_name=ENCODER_NAME,
-                encoder_weights=None,
-                in_channels=3,
-                classes=NUM_CLASSES,
-                aspp_rates=ASPP_RATES,
-                attention_type=ATTENTION_TYPE,
-                spatial_dropout=SPATIAL_DROPOUT
-            )
-        else:
-            net = smp.EfficientUnetPlusPlus(
-                encoder_name=ENCODER_NAME,
-                encoder_weights=None,   # weights come from checkpoint
-                in_channels=3,
-                classes=NUM_CLASSES,
-            )
+        logging.info("Creating EfficientUNetPlusPlus WITH Hybrid ASPP CBAM")
+        net = EfficientUNetPlusPlusWithHybridASPPCBAM(
+            encoder_name=ENCODER_NAME,
+            encoder_weights=None,
+            in_channels=3,
+            classes=NUM_CLASSES,
+            aspp_rates=ASPP_RATES,
+            spatial_dropout=SPATIAL_DROPOUT
+        )
 
         state_dict     = torch.load(MODEL_PATH, map_location=device, weights_only=True)
         new_state_dict = {}
         for k, v in state_dict.items():
             k = k[7:] if k.startswith('module.') else k
-            k = k.replace('cbam.', 'attention.', 1) if k.startswith('cbam.') else k
             new_state_dict[k] = v
 
-        patch_model_attention(net, new_state_dict)
         net.load_state_dict(new_state_dict)
         net.to(device).eval()
         logging.info("Model loaded successfully.")
